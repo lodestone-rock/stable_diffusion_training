@@ -2,3 +2,4 @@
 init.sh
 /.vscode
 /env
+__pycache__

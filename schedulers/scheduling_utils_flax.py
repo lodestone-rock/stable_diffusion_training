@@ -21,7 +21,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 import flax
 import jax.numpy as jnp
 
-from ..utils import BaseOutput, PushToHubMixin
+from diffusers.utils import BaseOutput, PushToHubMixin
 
 
 SCHEDULER_CONFIG_NAME = "scheduler_config.json"
@@ -219,6 +219,50 @@ def betas_for_alpha_bar(num_diffusion_timesteps: int, max_beta=0.999, dtype=jnp.
     return jnp.array(betas, dtype=dtype)
 
 
+def rescale_betas(betas: jnp.array) -> jnp.array:
+    """
+    Rescales betas to have zero terminal SNR Based on https://arxiv.org/abs/2305.08891 (Algorithm 1)
+
+
+    Args:
+        betas (`jnp.array`):
+            the betas (1D array) that the scheduler is being initialized with.
+
+    Returns:
+        `jnp.array`: rescaled betas with zero terminal SNR
+    """
+
+    ### 1. convert betas to alphas_bar_sqrt ###
+    alphas = 1 - betas
+    alphas_bar = jnp.cumprod(a=alphas, axis=0)
+    alphas_bar_sqrt = jnp.sqrt(alphas_bar)
+
+    ### 2. linear scaling ###
+    # store some old value for scaling
+    alpha_bar_sqrt_at_timestep_0 = alphas_bar_sqrt[0]
+    alpha_bar_sqrt_at_timestep_end = alphas_bar_sqrt[-1]
+
+    # shifting the timestep so the last timestep is zero
+    # subtracting / shifting the alpha_bar_sqrt curve down
+    alphas_bar_sqrt = alphas_bar_sqrt - alpha_bar_sqrt_at_timestep_end
+    # rescaling it to original or stretching the alpha_bar_sqrt along y axis
+    alphas_bar_sqrt = (
+        alphas_bar_sqrt
+        * alpha_bar_sqrt_at_timestep_0
+        / (alpha_bar_sqrt_at_timestep_0 - alpha_bar_sqrt_at_timestep_end)
+    )
+
+    ### 3. convert alpha_bar_sqrt back to betas ###
+    alphas_bar = alphas_bar_sqrt**2
+    # undoing cumprod
+    alphas = alphas_bar[1:] / alphas_bar[:-1]
+    # stitching back the first value
+    alphas = jnp.concatenate([alphas_bar[0:1], alphas])
+    betas = 1 - alphas
+
+    return betas
+
+
 @flax.struct.dataclass
 class CommonSchedulerState:
     alphas: jnp.ndarray
@@ -241,6 +285,15 @@ class CommonSchedulerState:
                 )
                 ** 2
             )
+        elif config.beta_schedule == "zero_snr_scaled_linear":
+            # this schedule is very specific to the latent diffusion model.
+            betas = (
+                jnp.linspace(
+                    config.beta_start**0.5, config.beta_end**0.5, config.num_train_timesteps, dtype=scheduler.dtype
+                )
+                ** 2
+            )
+            betas = rescale_betas(betas=betas)
         elif config.beta_schedule == "squaredcos_cap_v2":
             # Glide cosine schedule
             betas = betas_for_alpha_bar(config.num_train_timesteps, dtype=scheduler.dtype)
