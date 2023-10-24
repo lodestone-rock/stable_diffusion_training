@@ -1,0 +1,3 @@
+[submodule "streamer"]
+	path = streamer
+	url = https://github.com/lodestone-rock/streamer
