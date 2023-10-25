@@ -3,3 +3,7 @@ init.sh
 /.vscode
 /env
 __pycache__
+model_checkpoints/
+*.json
+ramdisk/
+*.log

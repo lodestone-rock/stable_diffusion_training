@@ -23,7 +23,7 @@ import jax
 import jax.numpy as jnp
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
-from diffusers.schedulers.scheduling_utils_flax import (
+from .scheduling_utils_flax import (
     CommonSchedulerState,
     FlaxKarrasDiffusionSchedulers,
     FlaxSchedulerMixin,
