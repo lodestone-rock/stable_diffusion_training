@@ -1,4 +1,4 @@
-from numpy import np
+import numpy as np
 
 def calculate_resolution_array(max_res_area=512 ** 2, bucket_lower_bound_res=256, rounding=64):
     """
