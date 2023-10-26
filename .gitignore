@@ -7,3 +7,4 @@ model_checkpoints/
 *.json
 ramdisk/
 *.log
+tensorboard/

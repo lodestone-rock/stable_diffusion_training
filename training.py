@@ -10,7 +10,8 @@ from training_utils import (
     TrainingConfig, 
     calculate_resolution_array, 
     load_models,
-    create_lion_optimizer_states
+    create_lion_optimizer_states,
+    create_frozen_states
 )
 from streamer.dataloader import DataLoader
 from streamer.utils import (
@@ -50,13 +51,18 @@ trained_model_states = create_lion_optimizer_states(
     adam_to_lion_scale_factor=7
 )
 
+frozen_states = create_frozen_states(
+    models=models,
+)
+
+
 # you can't pass this as a variable since this will get traced by jax
 # but this method is needed for loss computation so i explictly defined it here
 # i shouldve wrap the entire thing inside a class X_X
 # https://flax.readthedocs.io/en/latest/api_reference/flax.struct.html
 # TODO: use pytreenode so it can be used in function transformation!!!
-vae_fn=models["vae"]["vae_model"]
-noise_scheduler_fn=models["schedulers"]["noise_scheduler_object"]
+# vae_fn=models["vae"]["vae_model"]
+# noise_scheduler_fn=models["schedulers"]["noise_scheduler_object"]
 
 # TODO: this train step function is not finished!
 def train_step(
@@ -66,9 +72,11 @@ def train_step(
     # variable args
     batch:dict, # define sharding rule!
     train_rng:jax.random.PRNGKey, # define sharding rule!
+    frozen_vae_state: Any,
+    frozen_noise_scheduler_state: Any, # welp technically not a trainable by any means
     # unhashable static args
-    noise_scheduler_state:Any, # unhashable
-    vae_params:dict, # unhashable
+    # noise_scheduler_state:Any, # unhashable
+    # vae_params:dict, # unhashable
     # vae_fn:Any, # unhashable
     # noise_scheduler_fn:Any, # unhashable
     use_offset_noise:bool=False,
@@ -93,11 +101,11 @@ def train_step(
         batch
         ):
         # Convert images to latent space
-        vae_outputs = vae_fn.apply(
-            variables={"params": vae_params},
+        vae_outputs = frozen_vae_state.call.apply(
+            variables={"params": frozen_vae_state.params},
             sample=batch["pixel_values"],
             deterministic=True,
-            method=vae_fn.encode
+            method=frozen_vae_state.call.encode
         )
 
         # get sample distribution from VAE latent
@@ -127,13 +135,13 @@ def train_step(
             key=timestep_rng,
             shape=(batch_size,),
             minval=0,
-            maxval=noise_scheduler_fn.config.num_train_timesteps,
+            maxval=frozen_noise_scheduler_state.call.config.num_train_timesteps,
         )
 
         # Add noise to the latents according to the noise magnitude at each timestep
         # (this is the forward diffusion process)
-        noisy_latents = noise_scheduler_fn.add_noise(
-            state=noise_scheduler_state,
+        noisy_latents = frozen_noise_scheduler_state.call.add_noise(
+            state=frozen_noise_scheduler_state.params,
             original_samples=latents,
             noise=noise,
             timesteps=timesteps
@@ -193,11 +201,11 @@ def train_step(
 
         # Get the target for loss depending on the prediction type
         # sd1.x use epsilon aka noise residual but sd2.1 use velocity prediction
-        if noise_scheduler_fn.config.prediction_type == "epsilon":
+        if frozen_noise_scheduler_state.call.config.prediction_type == "epsilon":
             target = noise
-        elif noise_scheduler_fn.config.prediction_type == "v_prediction":
-            target = noise_scheduler_fn.get_velocity(
-                state=noise_scheduler_state,
+        elif frozen_noise_scheduler_state.call.config.prediction_type == "v_prediction":
+            target = frozen_noise_scheduler_state.call.get_velocity(
+                state=frozen_noise_scheduler_state.params,
                 sample=latents,
                 noise=noise,
                 timesteps=timesteps
@@ -205,7 +213,7 @@ def train_step(
         else:
             # panic!!
             raise ValueError(
-                f"Unknown prediction type {noise_scheduler_fn.config.prediction_type}")
+                f"Unknown prediction type {frozen_noise_scheduler_state.call.config.prediction_type}")
 
         # MSE loss
         loss = (target - model_pred) ** 2
@@ -228,8 +236,8 @@ def train_step(
     loss, grad = grad_fn(
         unet_state.params, # unet_params
         text_encoder_state.params, # text_encoder_params
-        vae_params, # vae_params
-        noise_scheduler_state, # noise_scheduler_state
+        frozen_vae_state.params, # frozen_vae_state.params
+        frozen_noise_scheduler_state.params, # frozen_noise_scheduler_state.params
         batch, # batch
         )
 
@@ -247,21 +255,8 @@ def train_step(
     # data structure so inplace update is good
     return new_unet_state, new_text_encoder_state, metrics, new_train_rng
 
-# just gonna be verbose here for less headache
-p_train_step = jax.jit(
-    train_step, 
-    # donated arguments (inplace update)
-    donate_argnames=(
-        "unet_state",
-        "text_encoder_state",
-    ), 
-    # compiled as static value
-    # only hashable one!
-    static_argnames=(
-        "use_offset_noise",
-        "strip_bos_eos_token",
-    )
-)
+
+jax.profiler.start_trace("./tensorboard")
 
 #TODO: put this RNG elsewere
 train_rngs = rng(2)
@@ -276,40 +271,109 @@ text_encoder_state = jax.tree_map(
     lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())), 
     trained_model_states["text_encoder_state"], 
 )
-models["vae"]["vae_params"] = jax.tree_map(
+frozen_vae = jax.tree_map(
     lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())), 
-    models["vae"]["vae_params"], 
+    frozen_states["vae_state"], 
 )
-del trained_model_states 
+frozen_schedulers = jax.tree_map(
+    lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())), 
+    frozen_states["schedulers_state"], 
+)
 
+
+dummy_batch_size = 8*4
 # dummy_batch
 with jax.default_device(jax.devices("cpu")[0]):
     batch = {
-        'attention_mask': jnp.arange(2 * 1 * 3 * 77).reshape(2 * 1, 3, 77), 
-        'input_ids': jnp.arange(2 * 3 * 77).reshape(2 * 3, 77), 
-        'pixel_values': jax.random.uniform(train_rngs, shape=(2 * 1, 3, 512, 512))
+        'attention_mask': jnp.arange(dummy_batch_size * 3 * 77).reshape(dummy_batch_size, 3, 77), 
+        'input_ids': jnp.arange(dummy_batch_size * 3 * 77).reshape(dummy_batch_size * 3, 77), 
+        'pixel_values': jax.random.uniform(train_rngs, shape=(dummy_batch_size , 3, 512, 512))
     }
 # define sharding rule (im doing data parallelism here)
 batch = jax.tree_map(
-    lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())), 
+    lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec("data_parallel", None))), 
     batch, 
 )
 
 
+# just gonna be verbose here for less headache
+p_train_step = jax.jit(
+    train_step, 
+    # donated arguments (inplace update)
+    donate_argnums=(
+        0, # "unet_state"
+        1, # "text_encoder_state"
+    ), 
+    in_shardings=(
+        # unet_state
+        jax.tree_map(
+            lambda leaf: NamedSharding(mesh, PartitionSpec()), 
+            trained_model_states["unet_state"], 
+        ),
+        # text_encoder_state
+        jax.tree_map(
+            lambda leaf: NamedSharding(mesh, PartitionSpec()), 
+            trained_model_states["text_encoder_state"], 
+        ),
+        # batch
+        jax.tree_map(
+            lambda leaf: NamedSharding(mesh, PartitionSpec("data_parallel", None)), 
+            batch, 
+        ),
+        # rngs
+        None, # honestly, donno how to shard this one, COMPILER! TAKE THE WHEEL HERE
+        # frozen_vae
+        jax.tree_map(
+            lambda leaf: NamedSharding(mesh, PartitionSpec()), 
+            frozen_states["vae_state"], 
+        ),
+        # frozen_schedulers
+        jax.tree_map(
+            lambda leaf: NamedSharding(mesh, PartitionSpec()), 
+            frozen_states["schedulers_state"], 
+        ),
+        # use_offset_noise
+        # None, # moved to static
+        # strip_bos_eos_token
+        # None, # moved to static
+    ),
+    # compiled as static value
+    # only hashable one!
+    static_argnames=(
+        "use_offset_noise",
+        "strip_bos_eos_token",
+    ),
+    out_shardings=(
+        jax.tree_map(
+            lambda leaf: NamedSharding(mesh, PartitionSpec()), 
+            trained_model_states["unet_state"], 
+        ),
+        jax.tree_map(
+            lambda leaf: NamedSharding(mesh, PartitionSpec()), 
+            trained_model_states["text_encoder_state"], 
+        ),
+        {"loss":  NamedSharding(mesh, PartitionSpec())},
+        None,
+    ),
+
+)
+del trained_model_states, frozen_states
 unet_state, text_encoder_state, metrics, train_rngs = p_train_step(
     # donated args
-    unet_state=unet_state,
-    text_encoder_state=text_encoder_state,
+    unet_state, # unet_state
+    text_encoder_state, # text_encoder_state
     # variable args
-    batch=batch,
-    train_rng=train_rngs,
+    batch, # batch
+    train_rngs, # train_rng
     # unhashable static args
-    noise_scheduler_state=models["schedulers"]["noise_scheduler_state"],
-    vae_params=models["vae"]["vae_params"],
+    frozen_vae, # frozen_vae_state
+    frozen_schedulers, # frozen_noise_scheduler_state
+    # noise_scheduler_state=models["schedulers"]["noise_scheduler_state"],
+    # vae_params=models["vae"]["vae_params"],
     # static args
-    use_offset_noise=False,
-    strip_bos_eos_token=True,
+    False, # use_offset_noise
+    True, # strip_bos_eos_token
 )
 
-
+jax.profiler.stop_trace()
 print()

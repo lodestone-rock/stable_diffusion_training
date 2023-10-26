@@ -11,6 +11,29 @@ from schedulers import FlaxDDPMScheduler
 from transformers import  CLIPTokenizer, FlaxCLIPTextModel
 from flax.training import train_state
 import optax
+from flax import struct
+from typing import Callable
+
+
+class FrozenModel(struct.PyTreeNode):
+    """
+    mimic the behaviour of train_state but this time for frozen params 
+    to make it passable to the jitted function
+    """
+    
+    # use pytree_node=False to indicate an attribute should not be touched
+    # by Jax transformations.
+    call: Callable = struct.field(pytree_node=False)
+    params: dict = struct.field(pytree_node=True)
+
+    @classmethod
+    def create(cls,apply_fn, params):
+        """Creates a new instance with `step=0` and initialized `opt_state`."""
+        return cls(
+            call=call,
+            params=params,
+        )
+
 
 @dataclass
 class TrainingConfig:
@@ -139,6 +162,38 @@ def load_models(model_dir:str) -> dict:
             "noise_scheduler_state": noise_scheduler_state,
             "noise_scheduler_object": noise_scheduler,
         },
+    }
+
+
+def create_frozen_states(models: dict):
+    """
+    create frozen training states that bundled with teh function or method associated with it
+
+    Args:
+        models (dict): A dictionary containing models and parameters.
+
+    Returns:
+        dict: A dictionary containing the optimizer states for U-Net and text encoder models.
+            {
+                "vae_state": vae_state,
+                "schedulers_state": schedulers_state
+            }
+    """
+    
+    vae_state = FrozenModel(
+        call=models["vae"]["vae_model"],
+        params=models["vae"]["vae_params"],
+    )
+
+    schedulers_state = FrozenModel(
+        # welp not a function but eh it should works
+        call=models["schedulers"]["noise_scheduler_object"],
+        params=models["schedulers"]["noise_scheduler_state"],
+    )
+    return {
+        
+        "vae_state": vae_state,
+        "schedulers_state": schedulers_state
     }
 
 
