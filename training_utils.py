@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from diffusers import (
     FlaxAutoencoderKL,
     FlaxStableDiffusionPipeline,
-    FlaxUNet2DConditionModel
+    FlaxUNet2DConditionModel,
 )
 from schedulers import FlaxDDPMScheduler
-from transformers import  CLIPTokenizer, FlaxCLIPTextModel
+from transformers import CLIPTokenizer, FlaxCLIPTextModel
 from flax.training import train_state
 import optax
 from flax import struct
@@ -17,17 +17,17 @@ from typing import Callable
 
 class FrozenModel(struct.PyTreeNode):
     """
-    mimic the behaviour of train_state but this time for frozen params 
+    mimic the behaviour of train_state but this time for frozen params
     to make it passable to the jitted function
     """
-    
+
     # use pytree_node=False to indicate an attribute should not be touched
     # by Jax transformations.
     call: Callable = struct.field(pytree_node=False)
     params: dict = struct.field(pytree_node=True)
 
     @classmethod
-    def create(cls,apply_fn, params):
+    def create(cls, apply_fn, params):
         """Creates a new instance with `step=0` and initialized `opt_state`."""
         return cls(
             call=call,
@@ -43,24 +43,28 @@ class TrainingConfig:
     {
         "model_path":"model_checkpoints/path"
         "learning_rate": 1e-6,
+        "unet_learning_rate": 1e-6,
+        "text_encoder_learning_rate": 1e-6,
         "lr_scheduler": "constant",
-        "adam_to_lion_scale_factor": 7.0
+        "adam_to_lion_scale_factor": 7.0,
+        "compilation_cache_path": "jax_cache"
     }
     """
+
     model_path: str
     learning_rate: float
     unet_learning_rate: float
     text_encoder_learning_rate: float
     lr_scheduler: str
     adam_to_lion_scale_factor: float
+    compilation_cache_path: str
 
 
-
-
-
-def calculate_resolution_array(max_res_area=512 ** 2, bucket_lower_bound_res=256, rounding=64):
+def calculate_resolution_array(
+    max_res_area=512**2, bucket_lower_bound_res=256, rounding=64
+):
     """
-    helper function to calculate image bucket 
+    helper function to calculate image bucket
 
     Parameters:
     - max_res_area (int): The maximum target resolution area of the image.
@@ -74,7 +78,11 @@ def calculate_resolution_array(max_res_area=512 ** 2, bucket_lower_bound_res=256
     centroid = int(root_max_res)
 
     # a sequence of number that divisible by 64 with constraint
-    w = np.arange(bucket_lower_bound_res // rounding * rounding, centroid // rounding * rounding + rounding, rounding)
+    w = np.arange(
+        bucket_lower_bound_res // rounding * rounding,
+        centroid // rounding * rounding + rounding,
+        rounding,
+    )
     # y=1/x formula with rounding down to the nearest multiple of 64
     # will maximize the clamped resolution to maximum res area
     h = ((max_res_area / w) // rounding * rounding).astype(int)
@@ -84,15 +92,15 @@ def calculate_resolution_array(max_res_area=512 ** 2, bucket_lower_bound_res=256
         w_delta = np.flip(w[:-1])
         h_delta = np.flip(h[:-1])
 
-    w = np.concatenate([w,w_delta])
-    h = np.concatenate([h,h_delta])
+    w = np.concatenate([w, w_delta])
+    h = np.concatenate([h, h_delta])
 
-    resolution = np.stack([w,h]).T
+    resolution = np.stack([w, h]).T
 
     return resolution
 
 
-def load_models(model_dir:str) -> dict:
+def load_models(model_dir: str) -> dict:
     """
     Load models from a directory using HuggingFace. the config hard coded for now!
 
@@ -125,7 +133,10 @@ def load_models(model_dir:str) -> dict:
 
     tokenizer = CLIPTokenizer.from_pretrained(model_dir, subfolder="tokenizer")
     unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
-        model_dir, subfolder="unet", dtype=jnp.bfloat16, use_memory_efficient=True
+        model_dir,
+        subfolder="unet",
+        dtype=jnp.bfloat16,
+        use_memory_efficient_attention=True,
     )
     text_encoder, text_encoder_params = FlaxCLIPTextModel.from_pretrained(
         model_dir, subfolder="text_encoder", dtype=jnp.bfloat16, _do_init=False
@@ -144,21 +155,21 @@ def load_models(model_dir:str) -> dict:
     )
     noise_scheduler_state = noise_scheduler.create_state()
 
-    #should've put this in dataclasses 
-    return{
-        "unet":{
+    # should've put this in dataclasses
+    return {
+        "unet": {
             "unet_params": unet_params,
             "unet_model": unet,
         },
-        "vae":{
+        "vae": {
             "vae_params": vae_params,
             "vae_model": vae,
         },
-        "text_encoder":{
+        "text_encoder": {
             "text_encoder_params": text_encoder_params,
             "text_encoder_model": text_encoder,
         },
-        "schedulers":{
+        "schedulers": {
             "noise_scheduler_state": noise_scheduler_state,
             "noise_scheduler_object": noise_scheduler,
         },
@@ -179,7 +190,7 @@ def create_frozen_states(models: dict):
                 "schedulers_state": schedulers_state
             }
     """
-    
+
     vae_state = FrozenModel(
         call=models["vae"]["vae_model"],
         params=models["vae"]["vae_params"],
@@ -190,11 +201,7 @@ def create_frozen_states(models: dict):
         call=models["schedulers"]["noise_scheduler_object"],
         params=models["schedulers"]["noise_scheduler_state"],
     )
-    return {
-        
-        "vae_state": vae_state,
-        "schedulers_state": schedulers_state
-    }
+    return {"vae_state": vae_state, "schedulers_state": schedulers_state}
 
 
 def create_lion_optimizer_states(
@@ -223,7 +230,7 @@ def create_lion_optimizer_states(
         train_unet (bool): Whether to train the U-Net model.
         train_text_encoder (bool): Whether to train the text encoder model.
         adam_to_lion_scale_factor (int): Scaling factor for adjusting learning rates.
-        u_net_learning_rate (float): unet learning rate 
+        u_net_learning_rate (float): unet learning rate
         text_encoder_learning_rate (float): text encoder learning rate
 
     Returns:
@@ -244,7 +251,6 @@ def create_lion_optimizer_states(
     text_encoder_state = None
 
     with jax.default_device(jax.devices("cpu")[0]):
-
         if train_unet:
             u_net_constant_scheduler = optax.constant_schedule(
                 u_net_learning_rate / adam_to_lion_scale_factor
@@ -286,8 +292,5 @@ def create_lion_optimizer_states(
                 params=models["text_encoder"]["text_encoder_params"],
                 tx=text_encoder_optimizer,
             )
-    
-    return {
-        "unet_state": unet_state,
-        "text_encoder_state": text_encoder_state
-    }
+
+    return {"unet_state": unet_state, "text_encoder_state": text_encoder_state}
