@@ -8,3 +8,4 @@ model_checkpoints/
 ramdisk/
 *.log
 tensorboard/
+jax_cache/
