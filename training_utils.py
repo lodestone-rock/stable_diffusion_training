@@ -72,7 +72,7 @@ class TrainingConfig:
         "text_encoder_context_window": 77,
         "context_window_concatenation_count": 3,
         "aot_compile": true,
-        "image_area_root": [576, 704, 832, 960, 1088], 
+        "image_area_root": [576, 704, 832, 960, 1088],
         "minimum_axis_length": [384, 512, 576, 704, 832]
     }
     """
@@ -332,10 +332,13 @@ def create_lion_optimizer_states(
     return {"unet_state": unet_state, "text_encoder_state": text_encoder_state}
 
 
-def on_device_model_training_state(training_config:TrainingConfig):
+def on_device_model_training_state(training_config: TrainingConfig):
     models = load_models(model_dir=training_config.model_path)
     trained_model_states = create_lion_optimizer_states(
-        models=models, train_text_encoder=True, train_unet=True, adam_to_lion_scale_factor=7
+        models=models,
+        train_text_encoder=True,
+        train_unet=True,
+        adam_to_lion_scale_factor=7,
     )
     frozen_states = create_frozen_states(
         models=models,
@@ -544,7 +547,11 @@ def train_step(
 
 
 def dp_compile_all_unique_resolution(
-    unet_state, text_encoder_state, frozen_vae, frozen_schedulers, training_config:TrainingConfig
+    unet_state,
+    text_encoder_state,
+    frozen_vae,
+    frozen_schedulers,
+    training_config: TrainingConfig,
 ):
     # keep the compiled function in cache
     if jax.devices()[0].platform == "tpu" and training_config.keep_compiled_fn_in_cache:
@@ -666,7 +673,6 @@ def dp_compile_all_unique_resolution(
             out_shardings=(
                 jax.tree_map(
                     lambda leaf: NamedSharding(mesh, PartitionSpec()),
-
                     unet_state,
                 ),
                 jax.tree_map(
@@ -701,13 +707,12 @@ def dp_compile_all_unique_resolution(
         gc.collect()
         return lowered_hlo, image_shape
 
-
     compiled_train_step = {}
+
     # wrap jax compile so i can use threading to dispatch compilation
     def _compile_unique_res_train_step(HLO: jax.stages.Lowered, resolution: np.shape):
         # this wont have collision right :fingers_crossed:
         compiled_train_step[resolution] = HLO.compile()
-
 
     # lower all of the possible resolution sequentially
     with TimingContextManager(f"lowering all res"):
