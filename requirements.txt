@@ -5,3 +5,4 @@ black
 tf-nightly
 tb-nightly
 tbp-nightly
+tqdm
