@@ -1,1 +1,2 @@
 from .scheduling_ddpm_flax import FlaxDDPMScheduler
+from .scheduling_ddim_flax import FlaxDDIMScheduler

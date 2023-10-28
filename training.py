@@ -1,4 +1,5 @@
 import time
+import sys
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -6,14 +7,14 @@ from training_utils import (
     TrainingConfig,
     on_device_model_training_state,
     dp_compile_all_unique_resolution,
+    save_model,
 )
 from streamer.dataloader import DataLoader
 from streamer.utils import (
-    numpy_to_pil_and_save,
-    write_list_to_file,
     TimingContextManager,
     read_json_file,
     save_dict_to_json,
+    delete_file_or_folder,
 )
 from transformers import CLIPTokenizer
 from dataclasses import fields
@@ -88,7 +89,14 @@ train_rngs = jax.random.PRNGKey(config_dict["master_seed"])
     text_encoder_state,
     frozen_vae,
     frozen_schedulers,
+    model_object_dict,
 ) = on_device_model_training_state(training_config)
+
+# compile all posible resolution bucket
+train_step_funcs = dp_compile_all_unique_resolution(
+    unet_state, text_encoder_state, frozen_vae, frozen_schedulers, training_config
+)
+
 
 # this should run inside giant loop
 
@@ -113,11 +121,6 @@ for _ in range(config_dict["chunk_limit"]):
         dataloader._bulk_batch_count = 100  # debug limit to 100 batch
     dataloader.dispatch_worker()
 
-    # compile all posible resolution bucket
-    train_step_funcs = dp_compile_all_unique_resolution(
-        unet_state, text_encoder_state, frozen_vae, frozen_schedulers, training_config
-    )
-
     # progress bar
     train_step_progress_bar = tqdm(
         total=int(dataloader._bulk_batch_count + dataloader._first_batch_count),
@@ -126,6 +129,28 @@ for _ in range(config_dict["chunk_limit"]):
         smoothing=0.3,
         leave=False,
     )
+
+    # test if saving model works so you dont waste compute!
+    try:
+        print("trying to save model to check if the saving mechanism works")
+        save_model(
+            model_object_dict=model_object_dict,
+            tokenizer_object=tokenizer,
+            unet_params=unet_state.params,
+            text_encoder_params=text_encoder_state.params,
+            vae_params=frozen_vae.params,
+            output_dir=config_dict["test_save_path"],
+        )
+    except Exception as e:
+        print(
+            f"failed to save model prior to training session! please check your config or your code first"
+        )
+        print(f"reason: {e}")
+        sys.exit()
+
+    print("save function works as expected deleting the test model")
+    # delete it afterwards because it's not needed
+    delete_file_or_folder(config_dict["test_save_path"])
 
     # while true ?
     for count in range(
@@ -163,7 +188,23 @@ for _ in range(config_dict["chunk_limit"]):
 
         # TODO: save model function
 
+    save_model(
+        model_object_dict=model_object_dict,
+        tokenizer_object=tokenizer,
+        unet_params=unet_state.params,
+        text_encoder_params=text_encoder_state.params,
+        vae_params=frozen_vae.params,
+        output_dir=f'{config_dict["model_path"]}-chunks-{config_dict["chunk_steps"]}',
+    )
+
+    # only save n latest chunk so it not cluttering the storage
+    delete_file_or_folder(
+        f'{config_dict["model_path"]}-chunks-{config_dict["chunk_steps"]-config_dict["keep_trained_model_buffer"]}'
+    )
+
+    # update states in json
     config_dict["chunk_number"] += 1
+    config_dict["chunk_steps"] += 1
 
     save_dict_to_json(config_dict, config_dict_path)
 

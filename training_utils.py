@@ -6,9 +6,10 @@ import numpy as np
 from dataclasses import dataclass
 from diffusers import (
     FlaxAutoencoderKL,
-    FlaxStableDiffusionPipeline,
     FlaxUNet2DConditionModel,
+    FlaxDDIMScheduler, # apparently broken if i use my implementation
 )
+from models.pipeline_flax_stable_diffusion import FlaxStableDiffusionPipeline
 from schedulers import FlaxDDPMScheduler
 from transformers import CLIPTokenizer, FlaxCLIPTextModel
 from flax.training import train_state
@@ -359,7 +360,22 @@ def on_device_model_training_state(training_config: TrainingConfig):
         lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())),
         frozen_states["schedulers_state"],
     )
-    return unet_state, text_encoder_state, frozen_vae, frozen_schedulers
+
+    # return this object for saving purposes
+    model_object_dict = {
+        "unet": models["unet"]["unet_model"],
+        "vae": models["vae"]["vae_model"],
+        "text_encoder": models["text_encoder"]["text_encoder_model"],
+        "schedulers": models["schedulers"]["noise_scheduler_object"],
+    }
+
+    return (
+        unet_state,
+        text_encoder_state,
+        frozen_vae,
+        frozen_schedulers,
+        model_object_dict,
+    )
 
 
 def train_step(
@@ -729,3 +745,45 @@ def dp_compile_all_unique_resolution(
             thread.join()
 
     return compiled_train_step
+
+
+def save_model(
+    model_object_dict: dict,
+    tokenizer_object: Any,
+    unet_params: dict,
+    text_encoder_params: dict,
+    vae_params: dict,
+    output_dir: str,
+):
+    # check if the passed state is a dict tree and not a state object
+    # if it's a state object warn to just take the dict params only
+
+    # DDPM doesnt work for some reason so i use DDIM as placeholder
+    noise_scheduler = FlaxDDIMScheduler(
+        beta_start=0.00085,
+        beta_end=0.012,
+        beta_schedule="scaled_linear",
+        num_train_timesteps=1000,
+        prediction_type="v_prediction",
+    )
+
+    # Create the pipeline using the trained modules and save it.
+    pipeline = FlaxStableDiffusionPipeline(
+        tokenizer=tokenizer_object,
+        text_encoder=model_object_dict["text_encoder"],
+        vae=model_object_dict["vae"],
+        unet=model_object_dict["unet"],
+        scheduler=noise_scheduler,
+    )
+
+    # save it
+    pipeline.save_pretrained(
+        save_directory=output_dir,
+        params={
+            "text_encoder": text_encoder_params,
+            "vae": vae_params,
+            "unet": unet_params,
+        },
+    )
+
+    print("f model saved ")
