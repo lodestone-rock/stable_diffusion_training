@@ -1,0 +1,9 @@
+@@ -200,7 +200,7 @@
+                 query_chunk_size = int(flatten_latent_dim)
+ 
+             hidden_states = jax_memory_efficient_attention(
+-                query_states, key_states, value_states, query_chunk_size=query_chunk_size, key_chunk_size=4096 * 4
++                query_states, key_states, value_states, query_chunk_size=query_chunk_size, key_chunk_size=flatten_latent_dim
+             )
+ 
+             hidden_states = hidden_states.transpose(1, 0, 2)
