@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from diffusers import (
     FlaxAutoencoderKL,
     FlaxUNet2DConditionModel,
-    FlaxDDIMScheduler, # apparently broken if i use my implementation
+    FlaxDDIMScheduler,  # apparently broken if i use my implementation
 )
 from models.pipeline_flax_stable_diffusion import FlaxStableDiffusionPipeline
 from schedulers import FlaxDDPMScheduler

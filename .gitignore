@@ -9,3 +9,4 @@ ramdisk/
 *.log
 tensorboard/
 jax_cache/
+*.csv
