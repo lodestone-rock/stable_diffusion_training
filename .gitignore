@@ -10,3 +10,4 @@ ramdisk/
 tensorboard/
 jax_cache/
 *.csv
+!model_properties_example.json

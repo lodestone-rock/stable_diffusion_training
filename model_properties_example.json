@@ -1,0 +1,57 @@
+{
+    "model_path": "model_checkpoints/model_name@0",
+    "test_save_path": "model_checkpoints/test",
+    "batch_size": 8,
+    "learning_rate": 1e-06,
+    "unet_learning_rate": 1e-06,
+    "text_encoder_learning_rate": 2.5e-07,
+    "lr_scheduler": "constant",
+    "adam_to_lion_scale_factor": 7.0,
+    "compilation_cache_path": "jax_cache",
+    "keep_compiled_fn_in_cache": true,
+    "text_encoder_context_window": 77,
+    "context_window_concatenation_count": 3,
+    "aot_compile": true,
+    "image_area_root": [
+        576,
+        704,
+        832,
+        960,
+        1088
+    ],
+    "minimum_axis_length": [
+        384,
+        512,
+        576,
+        704,
+        832
+    ],
+    "master_seed": 0,
+    "chunk_number": 0,
+    "chunk_limit": 47,
+    "ramdisk_path": "ramdisk",
+    "repo": {
+        "repo_0": {
+            "name": "huggingface/repo",
+            "prefix": "16384-e6-",
+            "total_file_count": 197,
+            "file_per_batch": 4,
+            "folder_path_in_repo": "chunks",
+            "image_width_col_name": "image_width",
+            "image_height_col_name": "image_height",
+            "caption_col": "caption",
+            "filename_col": "filename",
+            "coma_separated_shuffle": true
+        }
+    },
+    "token": "hf_token",
+    "repeat_batch": 5,
+    "numb_of_prefetched_batch": 1,
+    "numb_of_dataloader_worker_thread": 20,
+    "queue_get_timeout": 60,
+    "DEBUG": false,
+    "chunk_steps": 0,
+    "keep_trained_model_buffer": 3,
+    "loss_logging_interval": 100,
+    "loss_csv": "loss.csv"
+}
