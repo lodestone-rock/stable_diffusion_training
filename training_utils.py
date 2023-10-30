@@ -241,7 +241,7 @@ def create_frozen_states(models: dict):
 
     prepare_scheduler_for_custom_training(
         models["schedulers"]["noise_scheduler_object"],
-        models["schedulers"]["noise_scheduler_state"]
+        models["schedulers"]["noise_scheduler_state"],
     )
 
     schedulers_state = FrozenModel(
@@ -305,14 +305,14 @@ def create_lion_optimizer_states(
             )
             # TODO: Make this optional
             # NOTE: Passing None to mask is a valid way to disable the mask
-            with open('unet_weight_decay_mask.json', 'r') as json_file:
+            with open("unet_weight_decay_mask.json", "r") as json_file:
                 unet_wd_mask = json.load(json_file)
             u_net_lion = optax.lion(
                 learning_rate=u_net_constant_scheduler,
                 b1=0.9,
                 b2=0.99,
                 weight_decay=1e-2 * adam_to_lion_scale_factor,
-                mask=unet_wd_mask
+                mask=unet_wd_mask,
             )
             u_net_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
@@ -330,14 +330,14 @@ def create_lion_optimizer_states(
                 text_encoder_learning_rate / adam_to_lion_scale_factor
             )
             # TODO: Make this optional
-            with open('clip_weight_decay_mask.json', 'r') as json_file:
+            with open("clip_weight_decay_mask.json", "r") as json_file:
                 clip_wd_mask = json.load(json_file)
             text_encoder_lion = optax.lion(
                 learning_rate=text_encoder_constant_scheduler,
                 b1=0.9,
                 b2=0.99,
                 weight_decay=1e-2 * adam_to_lion_scale_factor,
-                mask=clip_wd_mask
+                mask=clip_wd_mask,
             )
             text_encoder_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
@@ -352,6 +352,7 @@ def create_lion_optimizer_states(
 
     return {"unet_state": unet_state, "text_encoder_state": text_encoder_state}
 
+
 def prepare_scheduler_for_custom_training(noise_scheduler, noise_scheduler_state):
     if hasattr(noise_scheduler, "all_snr"):
         return
@@ -364,6 +365,7 @@ def prepare_scheduler_for_custom_training(noise_scheduler, noise_scheduler_state
     all_snr = (alpha / sigma) ** 2
 
     noise_scheduler.all_snr = all_snr
+
 
 def on_device_model_training_state(training_config: TrainingConfig):
     models = load_models(training_config=training_config)
@@ -438,7 +440,7 @@ def train_step(
     def apply_snr_weight(loss, timesteps, noise_scheduler, gamma):
         snr = jnp.stack([noise_scheduler.all_snr[t] for t in timesteps])
         min_snr_gamma = jnp.minimum(snr, gamma)
-        if (frozen_noise_scheduler_state.call.config.prediction_type == "v_prediction"):
+        if frozen_noise_scheduler_state.call.config.prediction_type == "v_prediction":
             snr_weight = jnp.divide(min_snr_gamma, snr + 1).astype(jnp.float32)
         else:
             snr_weight = jnp.divide(min_snr_gamma, snr).astype(jnp.float32)
@@ -496,7 +498,9 @@ def train_step(
         noisy_latents = frozen_noise_scheduler_state.call.add_noise(
             state=frozen_noise_scheduler_state.params,
             original_samples=latents,
-            noise=noise + perturbation_noise_gamma * jax.random.normal(perturb_noise_rng, latents.shape),
+            noise=noise
+            + perturbation_noise_gamma
+            * jax.random.normal(perturb_noise_rng, latents.shape),
             timesteps=timesteps,
         )
         print(batch["input_ids"].shape)
@@ -735,7 +739,7 @@ def dp_compile_all_unique_resolution(
                 "use_offset_noise",
                 "strip_bos_eos_token",
                 "perturbation_noise_gamma",
-                "min_snr_gamma"
+                "min_snr_gamma",
             ),
             out_shardings=(
                 jax.tree_map(
@@ -766,8 +770,8 @@ def dp_compile_all_unique_resolution(
                 # static args
                 False,  # use_offset_noise
                 True,  # strip_bos_eos_token
-                0.0, # perturbation_noise_gamma
-                0.0 # min_snr_gamma
+                0.0,  # perturbation_noise_gamma
+                0.0,  # min_snr_gamma
             )
             # store in dict
             # lowered_hlos[f"{bucket_resolution[0]},{bucket_resolution[1]}"] = lowered_hlo
