@@ -12,6 +12,11 @@
     "text_encoder_context_window": 77,
     "context_window_concatenation_count": 3,
     "aot_compile": true,
+    "offset_noise": 0.0, 
+    "strip_bos_eos_token": true,
+    "min_snr_gamma": 0.0,
+    "perturbation_noise_gamma": 0.0,
+    "ema_weight_decay": 0.0,
     "image_area_root": [
         576,
         704,

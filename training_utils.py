@@ -1,4 +1,5 @@
 import gc
+import os
 from threading import Thread
 import jax
 import jax.numpy as jnp
@@ -15,6 +16,7 @@ from schedulers import FlaxDDPMScheduler
 from transformers import CLIPTokenizer, FlaxCLIPTextModel
 from flax.training import train_state
 import optax
+from optax_8bit_lion import lion_8bit
 from flax import struct
 from typing import Callable, Tuple, Any
 from jax.experimental.compilation_cache import compilation_cache as cc
@@ -47,6 +49,7 @@ class FrozenModel(struct.PyTreeNode):
     # by Jax transformations.
     call: Callable = struct.field(pytree_node=False)
     params: dict = struct.field(pytree_node=True)
+    ema_params:dict = struct.field(pytree_node=True)
 
     @classmethod
     def create(cls, apply_fn, params):
@@ -93,6 +96,11 @@ class TrainingConfig:
     aot_compile: bool
     image_area_root: list
     minimum_axis_length: list
+    offset_noise: float
+    strip_bos_eos_token: bool
+    min_snr_gamma: float
+    perturbation_noise_gamma: float
+    ema_weight_decay: float
 
 
 def calculate_resolution_array(
@@ -138,7 +146,7 @@ def calculate_resolution_array(
     return resolution
 
 
-def load_models(model_dir: str) -> dict:
+def load_models(model_dir: str, train_ema: bool = False) -> dict:
     """
     Load models from a directory using HuggingFace. the config hard coded for now!
 
@@ -193,10 +201,29 @@ def load_models(model_dir: str) -> dict:
     )
     noise_scheduler_state = noise_scheduler.create_state()
 
+    if train_ema:
+        if os.path.exists(f"{model_dir}-EMA"):
+            _, unet_params_ema = FlaxUNet2DConditionModel.from_pretrained(
+                f"{model_dir}-EMA",
+                subfolder="unet",
+                dtype=jnp.bfloat16,
+                use_memory_efficient_attention=True,
+            )
+            text_encoder, text_encoder_params = FlaxCLIPTextModel.from_pretrained(
+                f"{model_dir}-EMA", subfolder="text_encoder", dtype=jnp.bfloat16, _do_init=False
+            )
+        else:
+            unet_params_ema = unet_params
+            text_encoder_params_ema = text_encoder_params
+    else:
+        unet_params_ema = None
+        text_encoder_params_ema = None
+
     # should've put this in dataclasses
     return {
         "unet": {
             "unet_params": unet_params,
+            "unet_params_ema": unet_params_ema,
             "unet_model": unet,
         },
         "vae": {
@@ -205,6 +232,7 @@ def load_models(model_dir: str) -> dict:
         },
         "text_encoder": {
             "text_encoder_params": text_encoder_params,
+            "text_encoder_params_ema": text_encoder_params_ema,
             "text_encoder_model": text_encoder,
         },
         "schedulers": {
@@ -302,12 +330,13 @@ def create_lion_optimizer_states(
             # NOTE: Passing None to mask is a valid way to disable the mask
             with open('unet_weight_decay_mask.json', 'r') as json_file:
                 unet_wd_mask = json.load(json_file)
-            u_net_lion = optax.lion(
+            u_net_lion = lion_8bit(
                 learning_rate=u_net_constant_scheduler,
                 b1=0.9,
                 b2=0.99,
                 weight_decay=1e-2 * adam_to_lion_scale_factor,
-                mask=unet_wd_mask
+                mask=unet_wd_mask,
+                blk_size=16
             )
             u_net_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
@@ -327,12 +356,13 @@ def create_lion_optimizer_states(
             # TODO: Make this optional
             with open('clip_weight_decay_mask.json', 'r') as json_file:
                 clip_wd_mask = json.load(json_file)
-            text_encoder_lion = optax.lion(
+            text_encoder_lion = lion_8bit(
                 learning_rate=text_encoder_constant_scheduler,
                 b1=0.9,
                 b2=0.99,
                 weight_decay=1e-2 * adam_to_lion_scale_factor,
-                mask=clip_wd_mask
+                mask=clip_wd_mask,
+                blk_size=16
             )
             text_encoder_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
@@ -351,17 +381,16 @@ def prepare_scheduler_for_custom_training(noise_scheduler, noise_scheduler_state
     if hasattr(noise_scheduler, "all_snr"):
         return
 
-    alphas_cumprod = noise_scheduler_state.common.alphas_cumprod
-    sqrt_alphas_cumprod = jnp.sqrt(alphas_cumprod)
-    sqrt_one_minus_alphas_cumprod = jnp.sqrt(1.0 - alphas_cumprod)
-    alpha = sqrt_alphas_cumprod
-    sigma = sqrt_one_minus_alphas_cumprod
-    all_snr = (alpha / sigma) ** 2
+    alpha_bar = noise_scheduler_state.common.alphas_cumprod
+    all_snr = jnp.divide(alpha_bar, jnp.subtract(1, alpha_bar))
 
     noise_scheduler.all_snr = all_snr
 
 def on_device_model_training_state(training_config: TrainingConfig):
-    models = load_models(model_dir=training_config.model_path)
+    models = load_models(
+        model_dir=training_config.model_path, 
+        train_ema=training_config.ema_weight_decay != 0
+    )
     trained_model_states = create_lion_optimizer_states(
         models=models,
         train_text_encoder=True,
@@ -378,6 +407,14 @@ def on_device_model_training_state(training_config: TrainingConfig):
     text_encoder_state = jax.tree_map(
         lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())),
         trained_model_states["text_encoder_state"],
+    )
+    unet_ema = jax.tree_map(
+        lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())),
+        models["unet"]["unet_params_ema"],
+    )
+    text_encoder_ema = jax.tree_map(
+        lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())),
+        models["text_encoder"]["text_encoder_params_ema"],
     )
     frozen_vae = jax.tree_map(
         lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())),
@@ -399,6 +436,8 @@ def on_device_model_training_state(training_config: TrainingConfig):
     return (
         unet_state,
         text_encoder_state,
+        unet_ema,
+        text_encoder_ema,
         frozen_vae,
         frozen_schedulers,
         model_object_dict,
@@ -409,6 +448,8 @@ def train_step(
     # donated args
     unet_state: Any,  # define sharding rule!
     text_encoder_state: Any,  # define sharding rule!
+    unet_ema: Any,
+    text_encoder_ema: Any,
     # variable args
     batch: dict,  # define sharding rule!
     train_rng: jax.random.PRNGKey,  # define sharding rule!
@@ -416,10 +457,11 @@ def train_step(
     frozen_vae_state: Any,
     frozen_noise_scheduler_state: Any,  # welp technically not a trainable by any means
     # static args
-    use_offset_noise: bool = False,
+    offset_noise: float = 0,
     strip_bos_eos_token: bool = True,
     perturbation_noise_gamma: float = 0.0,
     min_snr_gamma: float = 0.0,
+    ema_weight_decay: float = 0.0
 ):
     """
     this jittable trainstep function just lightly wraps
@@ -465,17 +507,20 @@ def train_step(
             key=sample_rng, num=4
         )
         noise = jax.random.normal(key=noise_rng, shape=latents.shape)
-        if use_offset_noise:
-            # mean offset noise, why add offset?
-            # here https://www.crosslabs.org//blog/diffusion-with-offset-noise
-            noise_offset = (
-                jax.random.normal(
-                    key=noise_offset_rng,
-                    shape=(latents.shape[0], latents.shape[1], 1, 1),
-                )
-                * 0.1
+
+        # mean offset noise, why add offset?
+        # here https://www.crosslabs.org//blog/diffusion-with-offset-noise
+        # Don't worry about this not being conditional.
+        # If it's at the default of zero it will have no effect
+        # and constant folding will optimize it away.
+        noise_offset = (
+            jax.random.normal(
+                key=noise_offset_rng,
+                shape=(latents.shape[0], latents.shape[1], 1, 1),
             )
-            noise = noise + noise_offset
+            * offset_noise
+        )
+        noise = noise + noise_offset
 
         # Sample a random timestep for each image
         batch_size = latents.shape[0]
@@ -596,6 +641,16 @@ def train_step(
     new_unet_state = unet_state.apply_gradients(grads=grad[0])
     new_text_encoder_state = text_encoder_state.apply_gradients(grads=grad[1])
 
+    if ema_weight_decay != 0:
+        unet_ema = jax.tree_map(
+                lambda p_ema, p_mdl: ema_weight_decay * p_ema + (1 - ema_weight_decay) * p_mdl,
+                unet_ema, new_unet_state.params
+            )
+        text_encoder_ema = jax.tree_map(
+                lambda p_ema, p_mdl: ema_weight_decay * p_ema + (1 - ema_weight_decay) * p_mdl,
+                text_encoder_ema, new_text_encoder_state.params
+            )
+
     # calculate loss
     metrics = {"loss": loss}
 
@@ -603,7 +658,7 @@ def train_step(
     # but just in case i put the donated args with the same position as the input
     # donated args are new_unet_state and new_text_encoder_state since it has the same
     # data structure so inplace update is good
-    return new_unet_state, new_text_encoder_state, metrics, new_train_rng
+    return new_unet_state, new_text_encoder_state, unet_ema, text_encoder_ema, metrics, new_train_rng
 
 
 def dp_compile_all_unique_resolution(
@@ -730,7 +785,8 @@ def dp_compile_all_unique_resolution(
                 "use_offset_noise",
                 "strip_bos_eos_token",
                 "perturbation_noise_gamma",
-                "min_snr_gamma"
+                "min_snr_gamma",
+                "ema_weight_decay"
             ),
             out_shardings=(
                 jax.tree_map(
@@ -759,10 +815,11 @@ def dp_compile_all_unique_resolution(
                 frozen_vae,  # frozen_vae_state
                 frozen_schedulers,  # frozen_noise_scheduler_state
                 # static args
-                False,  # use_offset_noise
-                True,  # strip_bos_eos_token
-                0.0, # perturbation_noise_gamma
-                0.0 # min_snr_gamma
+                training_config.offset_noise,  # use_offset_noise
+                training_config.strip_bos_eos_token,  # strip_bos_eos_token
+                training_config.perturbation_noise_gamma, # perturbation_noise_gamma
+                training_config.min_snr_gamma, # min_snr_gamma
+                training_config.ema_weight_decay
             )
             # store in dict
             # lowered_hlos[f"{bucket_resolution[0]},{bucket_resolution[1]}"] = lowered_hlo
