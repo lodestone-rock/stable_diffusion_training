@@ -11,3 +11,5 @@ tensorboard/
 jax_cache/
 *.csv
 !model_properties_example.json
+!clip_weight_decay_mask.json
+!unet_weight_decay_mask.json
