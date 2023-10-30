@@ -1,0 +1,476 @@
+{
+    "text_model": {
+        "embeddings": {
+            "position_embedding": {
+                "embedding": false
+            },
+            "token_embedding": {
+                "embedding": false
+            }
+        },
+        "encoder": {
+            "layers": {
+                "0": {
+                    "layer_norm1": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "layer_norm2": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "mlp": {
+                        "fc1": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "fc2": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    },
+                    "self_attn": {
+                        "k_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "out_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "q_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "v_proj": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    }
+                },
+                "1": {
+                    "layer_norm1": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "layer_norm2": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "mlp": {
+                        "fc1": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "fc2": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    },
+                    "self_attn": {
+                        "k_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "out_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "q_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "v_proj": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    }
+                },
+                "10": {
+                    "layer_norm1": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "layer_norm2": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "mlp": {
+                        "fc1": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "fc2": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    },
+                    "self_attn": {
+                        "k_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "out_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "q_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "v_proj": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    }
+                },
+                "11": {
+                    "layer_norm1": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "layer_norm2": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "mlp": {
+                        "fc1": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "fc2": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    },
+                    "self_attn": {
+                        "k_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "out_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "q_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "v_proj": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    }
+                },
+                "2": {
+                    "layer_norm1": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "layer_norm2": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "mlp": {
+                        "fc1": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "fc2": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    },
+                    "self_attn": {
+                        "k_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "out_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "q_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "v_proj": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    }
+                },
+                "3": {
+                    "layer_norm1": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "layer_norm2": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "mlp": {
+                        "fc1": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "fc2": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    },
+                    "self_attn": {
+                        "k_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "out_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "q_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "v_proj": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    }
+                },
+                "4": {
+                    "layer_norm1": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "layer_norm2": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "mlp": {
+                        "fc1": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "fc2": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    },
+                    "self_attn": {
+                        "k_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "out_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "q_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "v_proj": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    }
+                },
+                "5": {
+                    "layer_norm1": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "layer_norm2": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "mlp": {
+                        "fc1": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "fc2": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    },
+                    "self_attn": {
+                        "k_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "out_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "q_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "v_proj": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    }
+                },
+                "6": {
+                    "layer_norm1": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "layer_norm2": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "mlp": {
+                        "fc1": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "fc2": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    },
+                    "self_attn": {
+                        "k_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "out_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "q_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "v_proj": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    }
+                },
+                "7": {
+                    "layer_norm1": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "layer_norm2": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "mlp": {
+                        "fc1": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "fc2": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    },
+                    "self_attn": {
+                        "k_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "out_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "q_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "v_proj": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    }
+                },
+                "8": {
+                    "layer_norm1": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "layer_norm2": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "mlp": {
+                        "fc1": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "fc2": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    },
+                    "self_attn": {
+                        "k_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "out_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "q_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "v_proj": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    }
+                },
+                "9": {
+                    "layer_norm1": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "layer_norm2": {
+                        "bias": false,
+                        "scale": false
+                    },
+                    "mlp": {
+                        "fc1": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "fc2": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    },
+                    "self_attn": {
+                        "k_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "out_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "q_proj": {
+                            "bias": false,
+                            "kernel": true
+                        },
+                        "v_proj": {
+                            "bias": false,
+                            "kernel": true
+                        }
+                    }
+                }
+            }
+        },
+        "final_layer_norm": {
+            "bias": false,
+            "scale": false
+        }
+    }
+}

@@ -3,6 +3,7 @@ from threading import Thread
 import jax
 import jax.numpy as jnp
 import numpy as np
+import json
 from dataclasses import dataclass
 from diffusers import (
     FlaxAutoencoderKL,
@@ -233,6 +234,11 @@ def create_frozen_states(models: dict):
         params=models["vae"]["vae_params"],
     )
 
+    prepare_scheduler_for_custom_training(
+        models["schedulers"]["noise_scheduler_object"],
+        models["schedulers"]["noise_scheduler_state"]
+    )
+
     schedulers_state = FrozenModel(
         # welp not a function but eh it should works
         call=models["schedulers"]["noise_scheduler_object"],
@@ -292,11 +298,16 @@ def create_lion_optimizer_states(
             u_net_constant_scheduler = optax.constant_schedule(
                 u_net_learning_rate / adam_to_lion_scale_factor
             )
+            # TODO: Make this optional
+            # NOTE: Passing None to mask is a valid way to disable the mask
+            with open('unet_weight_decay_mask.json', 'r') as json_file:
+                unet_wd_mask = json.load(json_file)
             u_net_lion = optax.lion(
                 learning_rate=u_net_constant_scheduler,
                 b1=0.9,
                 b2=0.99,
                 weight_decay=1e-2 * adam_to_lion_scale_factor,
+                mask=unet_wd_mask
             )
             u_net_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
@@ -313,11 +324,15 @@ def create_lion_optimizer_states(
             text_encoder_constant_scheduler = optax.constant_schedule(
                 text_encoder_learning_rate / adam_to_lion_scale_factor
             )
+            # TODO: Make this optional
+            with open('clip_weight_decay_mask.json', 'r') as json_file:
+                clip_wd_mask = json.load(json_file)
             text_encoder_lion = optax.lion(
                 learning_rate=text_encoder_constant_scheduler,
                 b1=0.9,
                 b2=0.99,
                 weight_decay=1e-2 * adam_to_lion_scale_factor,
+                mask=clip_wd_mask
             )
             text_encoder_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
@@ -332,6 +347,18 @@ def create_lion_optimizer_states(
 
     return {"unet_state": unet_state, "text_encoder_state": text_encoder_state}
 
+def prepare_scheduler_for_custom_training(noise_scheduler, noise_scheduler_state):
+    if hasattr(noise_scheduler, "all_snr"):
+        return
+
+    alphas_cumprod = noise_scheduler_state.common.alphas_cumprod
+    sqrt_alphas_cumprod = jnp.sqrt(alphas_cumprod)
+    sqrt_one_minus_alphas_cumprod = jnp.sqrt(1.0 - alphas_cumprod)
+    alpha = sqrt_alphas_cumprod
+    sigma = sqrt_one_minus_alphas_cumprod
+    all_snr = (alpha / sigma) ** 2
+
+    noise_scheduler.all_snr = all_snr
 
 def on_device_model_training_state(training_config: TrainingConfig):
     models = load_models(model_dir=training_config.model_path)
@@ -391,6 +418,8 @@ def train_step(
     # static args
     use_offset_noise: bool = False,
     strip_bos_eos_token: bool = True,
+    perturbation_noise_gamma: float = 0.0,
+    min_snr_gamma: float = 0.0,
 ):
     """
     this jittable trainstep function just lightly wraps
@@ -400,6 +429,17 @@ def train_step(
     # generate rng and return new_train_rng to be used for the next iteration step
     # rng is comunicated though device aparently
     dropout_rng, sample_rng, new_train_rng = jax.random.split(train_rng, num=3)
+
+    def apply_snr_weight(loss, timesteps, noise_scheduler, gamma):
+        snr = jnp.stack([noise_scheduler.all_snr[t] for t in timesteps])
+        min_snr_gamma = jnp.minimum(snr, gamma)
+        if (frozen_noise_scheduler_state.call.config.prediction_type == "v_prediction"):
+            snr_weight = jnp.divide(min_snr_gamma, snr + 1).astype(jnp.float32)
+        else:
+            snr_weight = jnp.divide(min_snr_gamma, snr).astype(jnp.float32)
+        snr_weight = jnp.expand_dims(snr_weight, axis=(1, 2, 3))
+        loss = loss * snr_weight
+        return loss
 
     def compute_loss(
         unet_params, text_encoder_params, vae_params, noise_scheduler_state, batch
@@ -421,8 +461,8 @@ def train_step(
 
         # Sample noise that we'll add to the latents
         # I think I should combine this with the first noise seed generator
-        noise_offset_rng, noise_rng, timestep_rng = jax.random.split(
-            key=sample_rng, num=3
+        noise_offset_rng, noise_rng, perturb_noise_rng, timestep_rng = jax.random.split(
+            key=sample_rng, num=4
         )
         noise = jax.random.normal(key=noise_rng, shape=latents.shape)
         if use_offset_noise:
@@ -451,7 +491,7 @@ def train_step(
         noisy_latents = frozen_noise_scheduler_state.call.add_noise(
             state=frozen_noise_scheduler_state.params,
             original_samples=latents,
-            noise=noise,
+            noise=noise + perturbation_noise_gamma * jax.random.normal(perturb_noise_rng, latents.shape),
             timesteps=timesteps,
         )
         print(batch["input_ids"].shape)
@@ -525,6 +565,10 @@ def train_step(
 
         # MSE loss
         loss = (target - model_pred) ** 2
+
+        if min_snr_gamma:
+            loss = apply_snr_weight(loss, timesteps, min_snr_gamma)
+
         loss = loss.mean()
 
         return loss
@@ -685,6 +729,8 @@ def dp_compile_all_unique_resolution(
             static_argnames=(
                 "use_offset_noise",
                 "strip_bos_eos_token",
+                "perturbation_noise_gamma",
+                "min_snr_gamma"
             ),
             out_shardings=(
                 jax.tree_map(
@@ -715,6 +761,8 @@ def dp_compile_all_unique_resolution(
                 # static args
                 False,  # use_offset_noise
                 True,  # strip_bos_eos_token
+                0.0, # perturbation_noise_gamma
+                0.0 # min_snr_gamma
             )
             # store in dict
             # lowered_hlos[f"{bucket_resolution[0]},{bucket_resolution[1]}"] = lowered_hlo
