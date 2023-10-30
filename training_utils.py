@@ -74,7 +74,10 @@ class TrainingConfig:
         "context_window_concatenation_count": 3,
         "aot_compile": true,
         "image_area_root": [576, 704, 832, 960, 1088],
-        "minimum_axis_length": [384, 512, 576, 704, 832]
+        "minimum_axis_length": [384, 512, 576, 704, 832],
+        "beta_scheduler": "zero_snr_scaled_linear",
+        "prediction_type": "v_prediction"
+
     }
     """
 
@@ -92,6 +95,8 @@ class TrainingConfig:
     aot_compile: bool
     image_area_root: list
     minimum_axis_length: list
+    beta_scheduler: str
+    prediction_type: str
 
 
 def calculate_resolution_array(
@@ -137,12 +142,12 @@ def calculate_resolution_array(
     return resolution
 
 
-def load_models(model_dir: str) -> dict:
+def load_models(training_config: TrainingConfig) -> dict:
     """
-    Load models from a directory using HuggingFace. the config hard coded for now!
+    Load models from a directory using HuggingFace. using TrainingConfig class
 
     Args:
-        model_dir (str): The path to the directory containing the models.
+        training_config (cls): training config class to grab configuration.
 
     Returns:
         dict: A dictionary containing the loaded models and their parameters.
@@ -167,7 +172,7 @@ def load_models(model_dir: str) -> dict:
     """
 
     # load the model params and model object
-
+    model_dir = training_config.model_path
     tokenizer = CLIPTokenizer.from_pretrained(model_dir, subfolder="tokenizer")
     unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
         model_dir,
@@ -186,9 +191,9 @@ def load_models(model_dir: str) -> dict:
     noise_scheduler = FlaxDDPMScheduler(
         beta_start=0.00085,
         beta_end=0.012,
-        beta_schedule="zero_snr_scaled_linear",
+        beta_schedule=training_config.beta_schedule,
         num_train_timesteps=1000,
-        prediction_type="v_prediction",
+        prediction_type=training_config.prediction_type,
     )
     noise_scheduler_state = noise_scheduler.create_state()
 
@@ -334,7 +339,7 @@ def create_lion_optimizer_states(
 
 
 def on_device_model_training_state(training_config: TrainingConfig):
-    models = load_models(model_dir=training_config.model_path)
+    models = load_models(training_config=training_config)
     trained_model_states = create_lion_optimizer_states(
         models=models,
         train_text_encoder=True,

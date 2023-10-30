@@ -11,6 +11,8 @@
     "keep_compiled_fn_in_cache": true,
     "text_encoder_context_window": 77,
     "context_window_concatenation_count": 3,
+    "beta_scheduler": "zero_snr_scaled_linear",
+    "prediction_type": "v_prediction",
     "aot_compile": true,
     "image_area_root": [
         576,
