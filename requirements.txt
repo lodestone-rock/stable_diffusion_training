@@ -1,0 +1,8 @@
+diffusers
+optax
+flax
+black
+tf-nightly
+tb-nightly
+tbp-nightly
+tqdm
