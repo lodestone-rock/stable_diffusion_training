@@ -17,6 +17,8 @@
     "offset_noise_magnitude": 0.0,
     "perturbation_noise_magnitude": 0.0,
     "min_snr_gamma_constant": 0.0,
+    "unet_weight_decay_mask": null,
+    "text_encoder_weight_decay_mask": null,
     "aot_compile": true,
     "image_area_root": [
         576,

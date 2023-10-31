@@ -16,7 +16,7 @@ from transformers import CLIPTokenizer, FlaxCLIPTextModel
 from flax.training import train_state
 import optax
 from flax import struct
-from typing import Callable, Tuple, Any
+from typing import Callable, Tuple, Any, Optional
 from jax.experimental.compilation_cache import compilation_cache as cc
 
 from streamer.utils import TimingContextManager
@@ -75,6 +75,8 @@ class TrainingConfig:
         "offset_noise_magnitude": 0.0,
         "perturbation_noise_magnitude": 0.0,
         "min_snr_gamma_constant": 0.0,
+        "unet_weight_decay_mask": null,
+        "text_encoder_weight_decay_mask": null,
 
     }
     """
@@ -99,6 +101,8 @@ class TrainingConfig:
     offset_noise_magnitude: float
     perturbation_noise_magnitude: float
     min_snr_gamma_constant: float
+    unet_weight_decay_mask: str
+    text_encoder_weight_decay_mask: str
 
 
 def calculate_resolution_array(
@@ -260,9 +264,13 @@ def create_lion_optimizer_states(
     adam_to_lion_scale_factor: int = 7,
     u_net_learning_rate: float = 1e-6,
     text_encoder_learning_rate: float = 1e-6,
+    unet_weight_decay_mask: Optional[Dict] = None,
+    text_encoder_weight_decay_mask: Optional[Dict] = None,
 ):
     """
     Create optimizer states for Lion, a custom optimizer, for U-Net and CLIP text encoder models.
+    TODO: this function currently trained both unet and text encoder
+    add functionality to disable it
 
     Args:
         models (dict): A dictionary containing the U-Net and text encoder models and parameters.
@@ -280,7 +288,9 @@ def create_lion_optimizer_states(
         train_text_encoder (bool): Whether to train the text encoder model.
         adam_to_lion_scale_factor (int): Scaling factor for adjusting learning rates.
         u_net_learning_rate (float): unet learning rate
-        text_encoder_learning_rate (float): text encoder learning rate
+        text_encoder_learning_rate (float): text encoder learning rate,
+        unet_weight_decay_mask Optional(dict): a pytree or dict that simmilar in unet_params structure
+        text_encoder_weight_decay_mask Optional(dict): a pytree or dict that simmilar in text_encoder_params structure
 
     Returns:
         dict: A dictionary containing the optimizer states for U-Net and text encoder models.
@@ -304,16 +314,12 @@ def create_lion_optimizer_states(
             u_net_constant_scheduler = optax.constant_schedule(
                 u_net_learning_rate / adam_to_lion_scale_factor
             )
-            # TODO: Make this optional
-            # NOTE: Passing None to mask is a valid way to disable the mask
-            with open("unet_weight_decay_mask.json", "r") as json_file:
-                unet_wd_mask = json.load(json_file)
             u_net_lion = optax.lion(
                 learning_rate=u_net_constant_scheduler,
                 b1=0.9,
                 b2=0.99,
                 weight_decay=1e-2 * adam_to_lion_scale_factor,
-                mask=unet_wd_mask,
+                mask=unet_weight_decay_mask,
             )
             u_net_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
@@ -330,15 +336,12 @@ def create_lion_optimizer_states(
             text_encoder_constant_scheduler = optax.constant_schedule(
                 text_encoder_learning_rate / adam_to_lion_scale_factor
             )
-            # TODO: Make this optional
-            with open("clip_weight_decay_mask.json", "r") as json_file:
-                clip_wd_mask = json.load(json_file)
             text_encoder_lion = optax.lion(
                 learning_rate=text_encoder_constant_scheduler,
                 b1=0.9,
                 b2=0.99,
                 weight_decay=1e-2 * adam_to_lion_scale_factor,
-                mask=clip_wd_mask,
+                mask=text_encoder_weight_decay_mask,
             )
             text_encoder_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
@@ -370,6 +373,16 @@ def prepare_scheduler_for_custom_training(noise_scheduler, noise_scheduler_state
 
 def on_device_model_training_state(training_config: TrainingConfig):
     models = load_models(training_config=training_config)
+
+    # TODO: Make this optional
+    # NOTE: Passing None to mask is a valid way to disable the mask
+    if training_config.unet_weight_decay_mask:
+        with open(training_config.unet_weight_decay_mask, "r") as json_file:
+            unet_weight_decay_mask = json.load(json_file)
+    if training_config.text_encoder_weight_decay_mask:
+        with open(training_config.text_encoder_weight_decay_mask, "r") as json_file:
+            text_encoder_weight_decay_mask = json.load(json_file)
+    
     trained_model_states = create_lion_optimizer_states(
         models=models,
         train_text_encoder=True,
