@@ -48,13 +48,6 @@ class FrozenModel(struct.PyTreeNode):
     call: Callable = struct.field(pytree_node=False)
     params: dict = struct.field(pytree_node=True)
 
-    @classmethod
-    def create(cls, apply_fn, params):
-        return cls(
-            call=call,
-            params=params,
-        )
-
 
 @dataclass
 class TrainingConfig:
@@ -78,6 +71,10 @@ class TrainingConfig:
         "minimum_axis_length": [384, 512, 576, 704, 832],
         "beta_scheduler": "zero_snr_scaled_linear",
         "prediction_type": "v_prediction"
+        "strip_bos_eos_token": true,
+        "offset_noise_magnitude": 0.0,
+        "perturbation_noise_magnitude": 0.0,
+        "min_snr_gamma_constant": 0.0,
 
     }
     """
@@ -98,6 +95,10 @@ class TrainingConfig:
     minimum_axis_length: list
     beta_scheduler: str
     prediction_type: str
+    strip_bos_eos_token: bool
+    offset_noise_magnitude: float
+    perturbation_noise_magnitude: float
+    min_snr_gamma_constant: float
 
 
 def calculate_resolution_array(
@@ -423,10 +424,10 @@ def train_step(
     frozen_vae_state: Any,
     frozen_noise_scheduler_state: Any,  # welp technically not a trainable by any means
     # static args
-    use_offset_noise: bool = False,
     strip_bos_eos_token: bool = True,
-    perturbation_noise_gamma: float = 0.0,
-    min_snr_gamma: float = 0.0,
+    offset_noise_magnitude: float = 0.0,
+    perturbation_noise_magnitude: float = 0.0,
+    min_snr_gamma_constant: float = 0.0,
 ):
     """
     this jittable trainstep function just lightly wraps
@@ -438,6 +439,10 @@ def train_step(
     dropout_rng, sample_rng, new_train_rng = jax.random.split(train_rng, num=3)
 
     def apply_snr_weight(loss, timesteps, noise_scheduler, gamma):
+        # this wumbo jumbo is basically doing a loss rescaling for each T timestep
+        # the gist fo this function is to reduce the loss contribution on later timestep since
+        # the later timestep has easy job to clean up the image, while the earlier steps is doing
+        # the hardwork. this function attenuate later timestep and keep the early timestep clamped and fixed.
         snr = jnp.stack([noise_scheduler.all_snr[t] for t in timesteps])
         min_snr_gamma = jnp.minimum(snr, gamma)
         if frozen_noise_scheduler_state.call.config.prediction_type == "v_prediction":
@@ -472,7 +477,8 @@ def train_step(
             key=sample_rng, num=4
         )
         noise = jax.random.normal(key=noise_rng, shape=latents.shape)
-        if use_offset_noise:
+        # im using if to avoid unnecessary compilation
+        if offset_noise_magnitude:
             # mean offset noise, why add offset?
             # here https://www.crosslabs.org//blog/diffusion-with-offset-noise
             noise_offset = (
@@ -480,9 +486,14 @@ def train_step(
                     key=noise_offset_rng,
                     shape=(latents.shape[0], latents.shape[1], 1, 1),
                 )
-                * 0.1
+                * offset_noise_magnitude
             )
             noise = noise + noise_offset
+
+        if perturbation_noise_magnitude:
+            noise = noise + perturbation_noise_magnitude * jax.random.normal(
+                perturb_noise_rng, latents.shape
+            )
 
         # Sample a random timestep for each image
         batch_size = latents.shape[0]
@@ -498,9 +509,7 @@ def train_step(
         noisy_latents = frozen_noise_scheduler_state.call.add_noise(
             state=frozen_noise_scheduler_state.params,
             original_samples=latents,
-            noise=noise
-            + perturbation_noise_gamma
-            * jax.random.normal(perturb_noise_rng, latents.shape),
+            noise=noise,
             timesteps=timesteps,
         )
         print(batch["input_ids"].shape)
@@ -575,16 +584,15 @@ def train_step(
         # MSE loss
         loss = (target - model_pred) ** 2
 
-        if min_snr_gamma:
-            loss = apply_snr_weight(loss, timesteps, min_snr_gamma)
+        # rescale MSE loss for each sample timestep
+        if min_snr_gamma_constant:
+            loss = apply_snr_weight(loss, timesteps, min_snr_gamma_constant)
 
         loss = loss.mean()
 
         return loss
 
     # perform autograd
-    # TODO: define the differentiable input !
-    # i havent updated this to include all params!
 
     # autograd transform function to get gradient of the input params
     # TODO: use reduce_axes to sum all of the gradient inplace!
@@ -728,18 +736,14 @@ def dp_compile_all_unique_resolution(
                     lambda leaf: NamedSharding(mesh, PartitionSpec()),
                     frozen_schedulers,
                 ),
-                # use_offset_noise
-                # None, # moved to static
-                # strip_bos_eos_token
-                # None, # moved to static
             ),
             # compiled as static value
             # only hashable one!
             static_argnames=(
-                "use_offset_noise",
                 "strip_bos_eos_token",
-                "perturbation_noise_gamma",
-                "min_snr_gamma",
+                "offset_noise_magnitude",
+                "perturbation_noise_magnitude",
+                "min_snr_gamma_constant",
             ),
             out_shardings=(
                 jax.tree_map(
@@ -768,10 +772,10 @@ def dp_compile_all_unique_resolution(
                 frozen_vae,  # frozen_vae_state
                 frozen_schedulers,  # frozen_noise_scheduler_state
                 # static args
-                False,  # use_offset_noise
-                True,  # strip_bos_eos_token
-                0.0,  # perturbation_noise_gamma
-                0.0,  # min_snr_gamma
+                training_config.strip_bos_eos_token,  # strip_bos_eos_token
+                training_config.offset_noise_magnitude,  # use_offset_noise
+                training_config.perturbation_noise_magnitude,  # perturbation_noise_gamma
+                training_config.min_snr_gamma_constant,  # min_snr_gamma
             )
             # store in dict
             # lowered_hlos[f"{bucket_resolution[0]},{bucket_resolution[1]}"] = lowered_hlo

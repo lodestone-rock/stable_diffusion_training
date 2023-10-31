@@ -13,6 +13,10 @@
     "context_window_concatenation_count": 3,
     "beta_scheduler": "zero_snr_scaled_linear",
     "prediction_type": "v_prediction",
+    "strip_bos_eos_token": true,
+    "offset_noise_magnitude": 0.0,
+    "perturbation_noise_magnitude": 0.0,
+    "min_snr_gamma_constant": 0.0,
     "aot_compile": true,
     "image_area_root": [
         576,
