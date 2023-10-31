@@ -18,7 +18,7 @@ from flax.training import train_state
 import optax
 from optax_8bit_lion import lion_8bit
 from flax import struct
-from typing import Callable, Tuple, Any
+from typing import Callable, Tuple, Any, Optional
 from jax.experimental.compilation_cache import compilation_cache as cc
 
 from streamer.utils import TimingContextManager
@@ -51,13 +51,6 @@ class FrozenModel(struct.PyTreeNode):
     params: dict = struct.field(pytree_node=True)
     ema_params:dict = struct.field(pytree_node=True)
 
-    @classmethod
-    def create(cls, apply_fn, params):
-        return cls(
-            call=call,
-            params=params,
-        )
-
 
 @dataclass
 class TrainingConfig:
@@ -78,7 +71,16 @@ class TrainingConfig:
         "context_window_concatenation_count": 3,
         "aot_compile": true,
         "image_area_root": [576, 704, 832, 960, 1088],
-        "minimum_axis_length": [384, 512, 576, 704, 832]
+        "minimum_axis_length": [384, 512, 576, 704, 832],
+        "beta_scheduler": "zero_snr_scaled_linear",
+        "prediction_type": "v_prediction"
+        "strip_bos_eos_token": true,
+        "offset_noise_magnitude": 0.0,
+        "perturbation_noise_magnitude": 0.0,
+        "min_snr_gamma_constant": 0.0,
+        "unet_weight_decay_mask": null,
+        "text_encoder_weight_decay_mask": null,
+
     }
     """
 
@@ -101,6 +103,8 @@ class TrainingConfig:
     min_snr_gamma: float
     perturbation_noise_gamma: float
     ema_weight_decay: float
+    beta_scheduler: str
+    prediction_type: str
 
 
 def calculate_resolution_array(
@@ -146,12 +150,13 @@ def calculate_resolution_array(
     return resolution
 
 
-def load_models(model_dir: str, train_ema: bool = False) -> dict:
+
+def load_models(training_config: TrainingConfig) -> dict:
     """
-    Load models from a directory using HuggingFace. the config hard coded for now!
+    Load models from a directory using HuggingFace. using TrainingConfig class
 
     Args:
-        model_dir (str): The path to the directory containing the models.
+        training_config (cls): training config class to grab configuration.
 
     Returns:
         dict: A dictionary containing the loaded models and their parameters.
@@ -176,7 +181,7 @@ def load_models(model_dir: str, train_ema: bool = False) -> dict:
     """
 
     # load the model params and model object
-
+    model_dir = training_config.model_path
     tokenizer = CLIPTokenizer.from_pretrained(model_dir, subfolder="tokenizer")
     unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
         model_dir,
@@ -195,13 +200,13 @@ def load_models(model_dir: str, train_ema: bool = False) -> dict:
     noise_scheduler = FlaxDDPMScheduler(
         beta_start=0.00085,
         beta_end=0.012,
-        beta_schedule="zero_snr_scaled_linear",
+        beta_schedule=training_config.beta_schedule,
         num_train_timesteps=1000,
-        prediction_type="v_prediction",
+        prediction_type=training_config.prediction_type,
     )
     noise_scheduler_state = noise_scheduler.create_state()
 
-    if train_ema:
+    if training_config.ema_weight_decay != 0:
         if os.path.exists(f"{model_dir}-EMA"):
             _, unet_params_ema = FlaxUNet2DConditionModel.from_pretrained(
                 f"{model_dir}-EMA",
@@ -264,7 +269,7 @@ def create_frozen_states(models: dict):
 
     prepare_scheduler_for_custom_training(
         models["schedulers"]["noise_scheduler_object"],
-        models["schedulers"]["noise_scheduler_state"]
+        models["schedulers"]["noise_scheduler_state"],
     )
 
     schedulers_state = FrozenModel(
@@ -282,9 +287,13 @@ def create_lion_optimizer_states(
     adam_to_lion_scale_factor: int = 7,
     u_net_learning_rate: float = 1e-6,
     text_encoder_learning_rate: float = 1e-6,
+    unet_weight_decay_mask: Optional[Dict] = None,
+    text_encoder_weight_decay_mask: Optional[Dict] = None,
 ):
     """
     Create optimizer states for Lion, a custom optimizer, for U-Net and CLIP text encoder models.
+    TODO: this function currently trained both unet and text encoder
+    add functionality to disable it
 
     Args:
         models (dict): A dictionary containing the U-Net and text encoder models and parameters.
@@ -302,7 +311,9 @@ def create_lion_optimizer_states(
         train_text_encoder (bool): Whether to train the text encoder model.
         adam_to_lion_scale_factor (int): Scaling factor for adjusting learning rates.
         u_net_learning_rate (float): unet learning rate
-        text_encoder_learning_rate (float): text encoder learning rate
+        text_encoder_learning_rate (float): text encoder learning rate,
+        unet_weight_decay_mask Optional(dict): a pytree or dict that simmilar in unet_params structure
+        text_encoder_weight_decay_mask Optional(dict): a pytree or dict that simmilar in text_encoder_params structure
 
     Returns:
         dict: A dictionary containing the optimizer states for U-Net and text encoder models.
@@ -363,6 +374,7 @@ def create_lion_optimizer_states(
                 weight_decay=1e-2 * adam_to_lion_scale_factor,
                 mask=clip_wd_mask,
                 blk_size=16
+                mask=text_encoder_weight_decay_mask,
             )
             text_encoder_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
@@ -377,6 +389,7 @@ def create_lion_optimizer_states(
 
     return {"unet_state": unet_state, "text_encoder_state": text_encoder_state}
 
+
 def prepare_scheduler_for_custom_training(noise_scheduler, noise_scheduler_state):
     if hasattr(noise_scheduler, "all_snr"):
         return
@@ -386,11 +399,9 @@ def prepare_scheduler_for_custom_training(noise_scheduler, noise_scheduler_state
 
     noise_scheduler.all_snr = all_snr
 
+
 def on_device_model_training_state(training_config: TrainingConfig):
-    models = load_models(
-        model_dir=training_config.model_path, 
-        train_ema=training_config.ema_weight_decay != 0
-    )
+    models = load_models(training_config=training_config)
     trained_model_states = create_lion_optimizer_states(
         models=models,
         train_text_encoder=True,
@@ -473,9 +484,13 @@ def train_step(
     dropout_rng, sample_rng, new_train_rng = jax.random.split(train_rng, num=3)
 
     def apply_snr_weight(loss, timesteps, noise_scheduler, gamma):
+        # this wumbo jumbo is basically doing a loss rescaling for each T timestep
+        # the gist fo this function is to reduce the loss contribution on later timestep since
+        # the later timestep has easy job to clean up the image, while the earlier steps is doing
+        # the hardwork. this function attenuate later timestep and keep the early timestep clamped and fixed.
         snr = jnp.stack([noise_scheduler.all_snr[t] for t in timesteps])
         min_snr_gamma = jnp.minimum(snr, gamma)
-        if (frozen_noise_scheduler_state.call.config.prediction_type == "v_prediction"):
+        if frozen_noise_scheduler_state.call.config.prediction_type == "v_prediction":
             snr_weight = jnp.divide(min_snr_gamma, snr + 1).astype(jnp.float32)
         else:
             snr_weight = jnp.divide(min_snr_gamma, snr).astype(jnp.float32)
@@ -522,6 +537,11 @@ def train_step(
         )
         noise = noise + noise_offset
 
+        if perturbation_noise_magnitude:
+            noise = noise + perturbation_noise_magnitude * jax.random.normal(
+                perturb_noise_rng, latents.shape
+            )
+
         # Sample a random timestep for each image
         batch_size = latents.shape[0]
         timesteps = jax.random.randint(
@@ -536,7 +556,7 @@ def train_step(
         noisy_latents = frozen_noise_scheduler_state.call.add_noise(
             state=frozen_noise_scheduler_state.params,
             original_samples=latents,
-            noise=noise + perturbation_noise_gamma * jax.random.normal(perturb_noise_rng, latents.shape),
+            noise=noise,
             timesteps=timesteps,
         )
         print(batch["input_ids"].shape)
@@ -611,16 +631,15 @@ def train_step(
         # MSE loss
         loss = (target - model_pred) ** 2
 
-        if min_snr_gamma:
-            loss = apply_snr_weight(loss, timesteps, min_snr_gamma)
+        # rescale MSE loss for each sample timestep
+        if min_snr_gamma_constant:
+            loss = apply_snr_weight(loss, timesteps, min_snr_gamma_constant)
 
         loss = loss.mean()
 
         return loss
 
     # perform autograd
-    # TODO: define the differentiable input !
-    # i havent updated this to include all params!
 
     # autograd transform function to get gradient of the input params
     # TODO: use reduce_axes to sum all of the gradient inplace!
@@ -774,15 +793,10 @@ def dp_compile_all_unique_resolution(
                     lambda leaf: NamedSharding(mesh, PartitionSpec()),
                     frozen_schedulers,
                 ),
-                # use_offset_noise
-                # None, # moved to static
-                # strip_bos_eos_token
-                # None, # moved to static
             ),
             # compiled as static value
             # only hashable one!
             static_argnames=(
-                "use_offset_noise",
                 "strip_bos_eos_token",
                 "perturbation_noise_gamma",
                 "min_snr_gamma",
