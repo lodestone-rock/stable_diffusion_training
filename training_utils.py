@@ -191,7 +191,7 @@ def load_models(training_config: TrainingConfig) -> dict:
     noise_scheduler = FlaxDDPMScheduler(
         beta_start=0.00085,
         beta_end=0.012,
-        beta_schedule=training_config.beta_schedule,
+        beta_schedule=training_config.beta_scheduler,
         num_train_timesteps=1000,
         prediction_type=training_config.prediction_type,
     )
