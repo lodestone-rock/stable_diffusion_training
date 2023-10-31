@@ -87,6 +87,8 @@ def main():
     (
         unet_state,
         text_encoder_state,
+        unet_ema,
+        text_encoder_ema,
         frozen_vae,
         frozen_schedulers,
         model_object_dict,
@@ -94,7 +96,7 @@ def main():
 
     # compile all posible resolution bucket
     train_step_funcs = dp_compile_all_unique_resolution(
-        unet_state, text_encoder_state, frozen_vae, frozen_schedulers, training_config
+        unet_state, text_encoder_state, unet_ema, text_encoder_ema, frozen_vae, frozen_schedulers, training_config
     )
 
     if config_dict["DEBUG"]:
@@ -147,6 +149,15 @@ def main():
                 vae_params=frozen_vae.params,
                 output_dir=config_dict["test_save_path"],
             )
+            if unet_ema is not None and text_encoder_ema is not None:
+                save_model(
+                    model_object_dict=model_object_dict,
+                    tokenizer_object=tokenizer,
+                    unet_params=unet_ema,
+                    text_encoder_params=text_encoder_ema,
+                    vae_params=frozen_vae.params,
+                    output_dir=config_dict["test_save_path"],
+                )
         except Exception as e:
             print(
                 f"failed to save model prior to training session! please check your config or your code first"
@@ -186,12 +197,14 @@ def main():
             # store loss value
             train_metrics = []
 
-            unet_state, text_encoder_state, train_metric, train_rngs = train_step_funcs[
+            unet_state, text_encoder_state, unet_ema, text_encoder_ema, train_metric, train_rngs = train_step_funcs[
                 current_batch["pixel_values"].shape
             ](
                 # donated args
                 unet_state,  # unet_state
                 text_encoder_state,  # text_encoder_state
+                unet_ema,
+                text_encoder_ema,
                 # variable args
                 current_batch,  # batch
                 train_rngs,  # train_rng
@@ -239,7 +252,15 @@ def main():
             vae_params=frozen_vae.params,
             output_dir=latest_model_path,
         )
-
+        if unet_ema is not None and text_encoder_ema is not None:
+            save_model(
+                model_object_dict=model_object_dict,
+                tokenizer_object=tokenizer,
+                unet_params=unet_ema,
+                text_encoder_params=text_encoder_ema,
+                vae_params=frozen_vae.params,
+                output_dir=f"{latest_model_path}-EMA",
+            )
         # only save n latest chunk so it not cluttering the storage
         delete_file_or_folder(
             f'{model_path_without_chunk_number}@{config_dict["chunk_steps"]-config_dict["keep_trained_model_buffer"]}'
