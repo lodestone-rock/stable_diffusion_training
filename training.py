@@ -244,6 +244,9 @@ def main():
         delete_file_or_folder(
             f'{model_path_without_chunk_number}@{config_dict["chunk_steps"]-config_dict["keep_trained_model_buffer"]}'
         )
+        delete_file_or_folder(
+            f'{model_path_without_chunk_number}@{config_dict["chunk_steps"]-config_dict["keep_trained_model_buffer"]}-EMA'
+        )
 
         # update states in json
         config_dict["model_path"] = latest_model_path
