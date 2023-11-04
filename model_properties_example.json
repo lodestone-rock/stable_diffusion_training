@@ -44,6 +44,18 @@
             "caption_col": "caption",
             "filename_col": "filename",
             "coma_separated_shuffle": true
+        },
+        "repo_1": {
+            "csv_path": "laion_audited.csv",
+            "prefix": "4096-laion-audited-",
+            "total_file_count": 197,
+            "file_per_batch": 4,
+            "folder_path_in_repo": "chunks",
+            "image_width_col_name": "image_width",
+            "image_height_col_name": "image_height",
+            "caption_col": "caption",
+            "filename_col": "filename",
+            "coma_separated_shuffle": true
         }
     },
     "token": "hf_token",
