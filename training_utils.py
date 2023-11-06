@@ -77,6 +77,7 @@ class TrainingConfig:
         "minimum_axis_length": [384, 512, 576, 704, 832],
         "beta_scheduler": "zero_snr_scaled_linear",
         "prediction_type": "v_prediction"
+        "excluded_layer_pattern_from_weight_decay": ["bias", "scale", "embedding"]
 
     }
     """
@@ -97,6 +98,7 @@ class TrainingConfig:
     minimum_axis_length: list
     beta_scheduler: str
     prediction_type: str
+    excluded_layer_pattern_from_weight_decay: list
 
 
 def calculate_resolution_array(
@@ -253,6 +255,7 @@ def create_lion_optimizer_states(
     adam_to_lion_scale_factor: int = 7,
     u_net_learning_rate: float = 1e-6,
     text_encoder_learning_rate: float = 1e-6,
+    excluded_layer_pattern_from_weight_decay: list = [],
 ):
     """
     Create optimizer states for Lion, a custom optimizer, for U-Net and CLIP text encoder models.
@@ -272,8 +275,9 @@ def create_lion_optimizer_states(
         train_unet (bool): Whether to train the U-Net model.
         train_text_encoder (bool): Whether to train the text encoder model.
         adam_to_lion_scale_factor (int): Scaling factor for adjusting learning rates.
-        u_net_learning_rate (float): unet learning rate
-        text_encoder_learning_rate (float): text encoder learning rate
+        u_net_learning_rate (float): unet learning rate.
+        text_encoder_learning_rate (float): text encoder learning rate.
+        excluded_layer_from_weight_decay (list): layer name that is excluded from weight decay.
 
     Returns:
         dict: A dictionary containing the optimizer states for U-Net and text encoder models.
@@ -292,6 +296,36 @@ def create_lion_optimizer_states(
     unet_state = None
     text_encoder_state = None
 
+    # create mask for weight decay
+    # if the layer match the mask pattern it will get excluded from weight decay calculation
+    # for example, bias or norm layer should be excluded from weight decay
+    if not excluded_layer_pattern_from_weight_decay:
+        unet_weight_decay_mask = None
+        text_encoder_weight_decay_mask = None
+    else:
+
+        # plop the function here
+        # too much clutter if using lambda function
+        def _is_layer_included(tuple_of_dict_keys) -> bool:
+            
+            # convert the dict name to key (im assuming the dict name is just a string here)
+            layer_name_hiearch = tuple(key.key for key in tuple_of_dict_keys)
+            is_included = True
+
+            for excluded in excluded_layer_pattern_from_weight_decay:
+                if excluded in layer_name_hiearch:
+                    is_included = False
+                    break
+            return is_included
+
+        unet_weight_decay_mask=jax.tree_util.tree_map_with_path(
+            lambda path, _: _is_layer_included(path),  models["unet"]["unet_params"]
+        )
+        text_encoder_weight_decay_mask=jax.tree_util.tree_map_with_path(
+            lambda path, _: _is_layer_included(path),  models["text_encoder"]["text_encoder_params"]
+        )
+
+
     with jax.default_device(jax.devices("cpu")[0]):
         if train_unet:
             u_net_constant_scheduler = optax.constant_schedule(
@@ -302,6 +336,7 @@ def create_lion_optimizer_states(
                 b1=0.9,
                 b2=0.99,
                 weight_decay=1e-2 * adam_to_lion_scale_factor,
+                mask=unet_weight_decay_mask,
             )
             u_net_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
@@ -323,6 +358,7 @@ def create_lion_optimizer_states(
                 b1=0.9,
                 b2=0.99,
                 weight_decay=1e-2 * adam_to_lion_scale_factor,
+                mask=text_encoder_weight_decay_mask,
             )
             text_encoder_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
@@ -345,6 +381,7 @@ def on_device_model_training_state(training_config: TrainingConfig):
         train_text_encoder=True,
         train_unet=True,
         adam_to_lion_scale_factor=7,
+        excluded_layer_pattern_from_weight_decay=training_config.excluded_layer_pattern_from_weight_decay
     )
     frozen_states = create_frozen_states(
         models=models,

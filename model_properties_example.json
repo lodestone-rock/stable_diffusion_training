@@ -14,6 +14,11 @@
     "beta_scheduler": "zero_snr_scaled_linear",
     "prediction_type": "v_prediction",
     "aot_compile": true,
+    "excluded_layer_pattern_from_weight_decay": [
+        "bias",
+        "scale",
+        "embedding"
+    ],
     "image_area_root": [
         576,
         704,
