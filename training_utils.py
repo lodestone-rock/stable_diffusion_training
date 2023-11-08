@@ -106,6 +106,20 @@ class TrainingConfig:
     quant_block_size: int
     
 
+def create_mask(pytree: dict, excluded_layer_list:list):
+    """create a boolean mask default is true"""
+    # convert the dict name to key (im assuming the dict name is just a string here)
+    def _create_mask(leaf_name):
+        layer_name_hiearch = tuple(key.key for key in leaf_name)
+
+        is_included = True
+        # if the layer is excluded from quantization just return the param itself
+        for excluded in excluded_layer_list:
+            if excluded in layer_name_hiearch:
+                is_included = False
+                break       
+        return is_included
+    return jax.tree_util.tree_map_with_path(lambda leaf, _: _create_mask(leaf), pytree)
 
 def calculate_resolution_array(
     max_res_area=512**2, bucket_lower_bound_res=256, rounding=64
@@ -314,28 +328,8 @@ def create_lion_optimizer_states(
         unet_weight_decay_mask = None
         text_encoder_weight_decay_mask = None
     else:
-
-        # plop the function here
-        # too much clutter if using lambda function
-        def _is_layer_included(tuple_of_dict_keys) -> bool:
-            
-            # convert the dict name to key (im assuming the dict name is just a string here)
-            layer_name_hiearch = tuple(key.key for key in tuple_of_dict_keys)
-            is_included = True
-
-            for excluded in excluded_layer_pattern_from_weight_decay:
-                if excluded in layer_name_hiearch:
-                    is_included = False
-                    break
-            return is_included
-
-        unet_weight_decay_mask=jax.tree_util.tree_map_with_path(
-            lambda path, _: _is_layer_included(path),  models["unet"]["unet_params"]
-        )
-        text_encoder_weight_decay_mask=jax.tree_util.tree_map_with_path(
-            lambda path, _: _is_layer_included(path),  models["text_encoder"]["text_encoder_params"]
-        )
-
+        unet_weight_decay_mask = create_mask(models["unet"]["unet_params"], excluded_layer_pattern_from_weight_decay)
+        text_encoder_weight_decay_mask = create_mask(models["text_encoder"]["text_encoder_params"], excluded_layer_pattern_from_weight_decay)
 
     with jax.default_device(jax.devices("cpu")[0]):
         if train_unet:
@@ -343,6 +337,7 @@ def create_lion_optimizer_states(
                 u_net_learning_rate / adam_to_lion_scale_factor
             )
             if lion_8bit_block_size:
+                unet_quant_mask = create_mask(models["unet"]["unet_params"], excluded_layer_from_quantization)
                 u_net_lion = lion_8bit(
                     learning_rate=u_net_constant_scheduler,
                     b1=0.9,
@@ -350,7 +345,7 @@ def create_lion_optimizer_states(
                     weight_decay=1e-2 * adam_to_lion_scale_factor,
                     mask=unet_weight_decay_mask,
                     block_size=lion_8bit_block_size,
-                    exclude_layer=excluded_layer_from_quantization
+                    excluded_layer_mask=unet_quant_mask
                 )
             else:
                 u_net_lion = optax.lion(
@@ -376,6 +371,7 @@ def create_lion_optimizer_states(
                 text_encoder_learning_rate / adam_to_lion_scale_factor
             )
             if lion_8bit_block_size:
+                text_encoder_quant_mask = create_mask(models["text_encoder"]["text_encoder_params"], excluded_layer_from_quantization)
                 text_encoder_lion = lion_8bit(
                     learning_rate=text_encoder_constant_scheduler,
                     b1=0.9,
@@ -383,7 +379,7 @@ def create_lion_optimizer_states(
                     weight_decay=1e-2 * adam_to_lion_scale_factor,
                     mask=text_encoder_weight_decay_mask,
                     block_size=lion_8bit_block_size,
-                    exclude_layer=excluded_layer_from_quantization
+                    excluded_layer_mask=text_encoder_quant_mask
                 )
             else:
                 text_encoder_lion = optax.lion(
