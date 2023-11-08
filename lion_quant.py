@@ -22,7 +22,7 @@ def scale_by_lion_8bit(
     b2: float = 0.99,
     mu_scale_dtype: Optional[chex.ArrayDType] = None,
     block_size: Optional[int] = 16,
-    excluded_layer_mask: list = [],
+    excluded_layer_mask: Optional[Any] = None,
 ) -> base.GradientTransformation:
     """Rescale updates according to the Lion algorithm.
 
@@ -35,8 +35,9 @@ def scale_by_lion_8bit(
         mu_scale_dtype: Optional `dtype` to be used for the momentum; if
         `None` then the `dtype is inferred from `params` and `updates`.
         block_size: Optional `int` quantization block size.
-        TODO: MASK!!!!
-        TODO: MASK for unquantized param must be another dict to make it static
+        excluded_layer_mask: A tree with same structure as (or a prefix of) your params PyTree.
+        The leaves should be booleans, `True` for leaves/subtrees you want to
+        apply the quantization to, and `False` for those you want to skip. 
 
     Returns:
         A `GradientTransformation` object.
@@ -63,16 +64,10 @@ def scale_by_lion_8bit(
         return x
 
     def _block_quantize(leaf: chex.Array):
-        # TODO: perhaps remove this blocksize check if it's slow
-        # padding by zero just in case it's not divisible by block size
-        # pad the tail
-        # tail_pad = int(block_size - (leaf.size % block_size))
         # store original shape and pad for reconstruction later
         leaf_shape = leaf.shape
-        # flatten >> pad >> reshape to [n,block_size]
-        # leaf = jnp.pad(leaf.reshape(-1), [0, tail_pad]).reshape(-1, block_size)
+        # flatten >> reshape to [n,block_size] to increase MXU usage
         leaf = leaf.reshape(-1, block_size)
-
         # rescale the weight
         scales = jnp.max(jnp.abs(leaf), axis=-1, keepdims=True)
         # just in case the abs max scale is zero convert it to 1 to prevent zero division
@@ -83,37 +78,20 @@ def scale_by_lion_8bit(
 
         # quantization happen after rescaling
         leaf = _quantize(leaf)
-        return leaf, scales # tail_pad, leaf_shape, leaf.size
+        return leaf, scales
 
     def _block_dequantize(
-        leaf_shape,
+        leaf_shape: chex.Array,
         leaf: chex.Array,
-        scales: chex.Array = None,
-        # pad: int = None,
-        # leaf_size=None,
+        scales: chex.Array,
     ):
         # dequant before rescale
         leaf = _dequantize(leaf)
-        # remove pad and reconstruct array back to the orig shape
+        # flatten then reshape it back to the original shape
         leaf = (leaf * scales).reshape(-1)
-        # leaf = jax.lax.dynamic_slice(leaf,(0,), (leaf_size - pad,))
         leaf = leaf.reshape(leaf_shape.shape)
-        return leaf # (leaf * scales).reshape(-1)[: leaf.size - pad].reshape(leaf_shape)
+        return leaf 
 
-    def _create_quantized_flag(leaf_name):
-        """return a tuple where the first element a boolean true flag indicating if the param needs to be quantized"""
-        # convert the dict name to key (im assuming the dict name is just a string here)
-        layer_name_hiearch = tuple(key.key for key in leaf_name)
-
-        is_included = True
-        # if the layer is excluded from quantization just return the param itself
-        if exclude_layer:
-            for excluded in exclude_layer:
-                if excluded in layer_name_hiearch:
-                    included = False
-                    break       
-        return is_included
-    
     def _is_quantized(node):
         return isinstance(node, tuple)
 
@@ -127,26 +105,18 @@ def scale_by_lion_8bit(
             # anything special with state.mu_quant (a tuple)
             lambda g, t, shape: _block_quantize((1 - decay) * (g**order) + decay * _block_dequantize(shape, *t)) if _is_quantized(t) else (1 - decay) * (g**order) + decay * t,
             updates,  # the leaf is pure array
-            moments,  # the leaf is a tuple with quantization flag as the first element
+            moments,  # the leaf is a quantization params
             param_shape
         )
 
     def init_fn(params):
         # this one is the same shape as the param itself
         mu_quant = jax.tree_util.tree_map_with_path(  # moment
-            # _create_quantized_flag returns a tuple of params with quantization flag for the first element
             # _block_quantize will quantize it if the flag is true, else it will stay the same
             lambda leaf, t, flag: _block_quantize(jnp.zeros_like(t, dtype=mu_scale_dtype)) if flag else jnp.zeros_like(t, dtype=mu_scale_dtype), 
             params, 
             excluded_layer_mask
         )
-
-        # make sure initialization for the scale array is not zero lol
-        # or else you're gonna divide by zero and you're gonna have a bad day!
-        # also the shape is not identical to the params because it's a slice of the params itself
-        # some layer must get excluded from this
-        # TODO: MASK!!!
-
         return ScaleBy8bitLionState(count=jnp.zeros([], jnp.int32), mu_quant=mu_quant, mu_quant_flag=excluded_layer_mask)
 
     def update_fn(updates, state, params=None):
@@ -156,16 +126,13 @@ def scale_by_lion_8bit(
             # https://github.com/google/jax/discussions/12826#discussioncomment-3894462
             # according to douglas first argument is used to infer tree structure so i dont have to do
             # anything special with state.mu_quant (a tuple)
-            # _block_dequantize dequant the mu back and returning a tuple with flag and params
-            # remove the flag then compute the gradient as usual
+            # _block_dequantize dequant the mu back and returning a tuple of quantized params
             lambda g, m, shape:jnp.sign((1.0 - b1) * g + b1 * _block_dequantize(shape, *m)) if _is_quantized(m) else jnp.sign((1.0 - b1) * g + b1 * m), 
             updates,
             state.mu_quant,
             param_shape
         )
         mu_quant = _update_moment_quant(updates, state.mu_quant, b2, 1)
-        # no casting!
-        # mu = utils.cast_tree(mu, mu_scale_dtype)
         count_inc = numerics.safe_int32_increment(state.count)
         return updates_new, ScaleBy8bitLionState(count=count_inc, mu_quant=mu_quant, mu_quant_flag=state.mu_quant_flag)
 
@@ -180,7 +147,7 @@ def lion_8bit(
     block_size: int = 64,
     weight_decay: float = 1e-3,
     mask: Optional[Union[Any, Callable[[base.Params], Any]]] = None,
-    excluded_layer_mask: Optional[Union[Any, Callable[[base.Params], Any]]] = None,
+    excluded_layer_mask: Optional[Any] = None,
 ) -> base.GradientTransformation:
     """The Lion optimizer.
     Lion is discovered by symbolic program search. Unlike most adaptive optimizers
@@ -208,8 +175,7 @@ def lion_8bit(
         The leaves should be booleans, `True` for leaves/subtrees you want to
         apply the weight decay to, and `False` for those you want to skip. Note
         that the Adam gradient transformations are applied to all parameters.
-        excluded_layer_mask: A tree with same structure as (or a prefix of) the params PyTree,
-        or a Callable that returns such a pytree given the params/updates.
+        excluded_layer_mask: A tree with same structure as (or a prefix of) your params PyTree.
         The leaves should be booleans, `True` for leaves/subtrees you want to
         apply the quantization to, and `False` for those you want to skip. 
     Returns:
