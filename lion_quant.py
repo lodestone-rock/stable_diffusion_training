@@ -66,11 +66,12 @@ def scale_by_lion_8bit(
         # TODO: perhaps remove this blocksize check if it's slow
         # padding by zero just in case it's not divisible by block size
         # pad the tail
-        tail_pad = int(block_size - (leaf.size % block_size))
+        # tail_pad = int(block_size - (leaf.size % block_size))
         # store original shape and pad for reconstruction later
         leaf_shape = leaf.shape
         # flatten >> pad >> reshape to [n,block_size]
-        leaf = jnp.pad(leaf.reshape(-1), [0, tail_pad]).reshape(-1, block_size)
+        # leaf = jnp.pad(leaf.reshape(-1), [0, tail_pad]).reshape(-1, block_size)
+        leaf = leaf.reshape(-1, block_size)
 
         # rescale the weight
         scales = jnp.max(jnp.abs(leaf), axis=-1, keepdims=True)
@@ -82,18 +83,22 @@ def scale_by_lion_8bit(
 
         # quantization happen after rescaling
         leaf = _quantize(leaf)
-        return leaf, scales, tail_pad, leaf_shape
+        return leaf, scales # tail_pad, leaf_shape, leaf.size
 
     def _block_dequantize(
+        leaf_shape,
         leaf: chex.Array,
         scales: chex.Array = None,
-        pad: int = None,
-        leaf_shape=None,
+        # pad: int = None,
+        # leaf_size=None,
     ):
         # dequant before rescale
         leaf = _dequantize(leaf)
         # remove pad and reconstruct array back to the orig shape
-        return (leaf * scales).reshape(-1)[: leaf.size - pad].reshape(leaf_shape)
+        leaf = (leaf * scales).reshape(-1)
+        # leaf = jax.lax.dynamic_slice(leaf,(0,), (leaf_size - pad,))
+        leaf = leaf.reshape(leaf_shape.shape)
+        return leaf # (leaf * scales).reshape(-1)[: leaf.size - pad].reshape(leaf_shape)
 
     def _create_quantized_flag(leaf_name):
         """return a tuple where the first element a boolean true flag indicating if the param needs to be quantized"""
@@ -109,19 +114,21 @@ def scale_by_lion_8bit(
                     break       
         return is_included
     
-    def qt_leaf(node):
-        return node
+    def _is_quantized(node):
+        return isinstance(node, tuple)
 
-    def _update_moment_quant(updates, moments, decay, order, mu_quant_flag):
+    def _update_moment_quant(updates, moments, decay, order):
         """Compute the exponential moving average of the `order`-th moment."""
+        param_shape = jax.tree_map(lambda x: jax.eval_shape(lambda y: y, x), updates)
+
         return jax.tree_util.tree_map(
             # https://github.com/google/jax/discussions/12826#discussioncomment-3894462
             # according to douglas first argument is used to infer tree structure so i dont have to do
             # anything special with state.mu_quant (a tuple)
-            lambda flag, g, t: _block_quantize((1 - decay) * (g**order) + decay * _block_dequantize(*t)) if flag else (1 - decay) * (g**order) + decay * t,
-            mu_quant_flag,
+            lambda g, t, shape: _block_quantize((1 - decay) * (g**order) + decay * _block_dequantize(shape, *t)) if _is_quantized(t) else (1 - decay) * (g**order) + decay * t,
             updates,  # the leaf is pure array
             moments,  # the leaf is a tuple with quantization flag as the first element
+            param_shape
         )
 
     def init_fn(params):
@@ -144,18 +151,19 @@ def scale_by_lion_8bit(
 
     def update_fn(updates, state, params=None):
         del params
+        param_shape = jax.tree_map(lambda x: jax.eval_shape(lambda y: y, x), updates)
         updates_new = jax.tree_util.tree_map(
             # https://github.com/google/jax/discussions/12826#discussioncomment-3894462
             # according to douglas first argument is used to infer tree structure so i dont have to do
             # anything special with state.mu_quant (a tuple)
             # _block_dequantize dequant the mu back and returning a tuple with flag and params
             # remove the flag then compute the gradient as usual
-            lambda g, m, flag:jnp.sign((1.0 - b1) * g + b1 * _block_dequantize(*m)) if flag else jnp.sign((1.0 - b1) * g + b1 * m), 
+            lambda g, m, shape:jnp.sign((1.0 - b1) * g + b1 * _block_dequantize(shape, *m)) if _is_quantized(m) else jnp.sign((1.0 - b1) * g + b1 * m), 
             updates,
             state.mu_quant,
-            state.mu_quant_flag
+            param_shape
         )
-        mu_quant = _update_moment_quant(updates, state.mu_quant, b2, 1, state.mu_quant_flag)
+        mu_quant = _update_moment_quant(updates, state.mu_quant, b2, 1)
         # no casting!
         # mu = utils.cast_tree(mu, mu_scale_dtype)
         count_inc = numerics.safe_int32_increment(state.count)
