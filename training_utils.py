@@ -17,6 +17,7 @@ import optax
 from flax import struct
 from typing import Callable, Tuple, Any
 from jax.experimental.compilation_cache import compilation_cache as cc
+from lion_quant import lion_8bit
 
 from streamer.utils import TimingContextManager
 
@@ -78,6 +79,8 @@ class TrainingConfig:
         "beta_scheduler": "zero_snr_scaled_linear",
         "prediction_type": "v_prediction"
         "excluded_layer_pattern_from_weight_decay": ["bias", "scale", "embedding"]
+        "excluded_layer_from_quantization": ["bias", "scale", "embedding"]
+        "quant_block_size": 16
 
     }
     """
@@ -99,6 +102,9 @@ class TrainingConfig:
     beta_scheduler: str
     prediction_type: str
     excluded_layer_pattern_from_weight_decay: list
+    excluded_layer_from_quantization: list
+    quant_block_size: int
+    
 
 
 def calculate_resolution_array(
@@ -256,6 +262,8 @@ def create_lion_optimizer_states(
     u_net_learning_rate: float = 1e-6,
     text_encoder_learning_rate: float = 1e-6,
     excluded_layer_pattern_from_weight_decay: list = [],
+    excluded_layer_from_quantization: list = [],
+    lion_8bit_block_size:int = None,
 ):
     """
     Create optimizer states for Lion, a custom optimizer, for U-Net and CLIP text encoder models.
@@ -278,6 +286,9 @@ def create_lion_optimizer_states(
         u_net_learning_rate (float): unet learning rate.
         text_encoder_learning_rate (float): text encoder learning rate.
         excluded_layer_from_weight_decay (list): layer name that is excluded from weight decay.
+        excluded_layer_from_quantization (list): layer name that is excluded from 8 bit quantization.
+        lion_8bit_block_size (int): 
+            block chunks for 8bit aproximation for the optimizer states, if none use regular lion instead 
 
     Returns:
         dict: A dictionary containing the optimizer states for U-Net and text encoder models.
@@ -331,13 +342,24 @@ def create_lion_optimizer_states(
             u_net_constant_scheduler = optax.constant_schedule(
                 u_net_learning_rate / adam_to_lion_scale_factor
             )
-            u_net_lion = optax.lion(
-                learning_rate=u_net_constant_scheduler,
-                b1=0.9,
-                b2=0.99,
-                weight_decay=1e-2 * adam_to_lion_scale_factor,
-                mask=unet_weight_decay_mask,
-            )
+            if lion_8bit_block_size:
+                u_net_lion = lion_8bit(
+                    learning_rate=u_net_constant_scheduler,
+                    b1=0.9,
+                    b2=0.99,
+                    weight_decay=1e-2 * adam_to_lion_scale_factor,
+                    mask=unet_weight_decay_mask,
+                    block_size=lion_8bit_block_size,
+                    exclude_layer=excluded_layer_from_quantization
+                )
+            else:
+                u_net_lion = optax.lion(
+                    learning_rate=u_net_constant_scheduler,
+                    b1=0.9,
+                    b2=0.99,
+                    weight_decay=1e-2 * adam_to_lion_scale_factor,
+                    mask=unet_weight_decay_mask,
+                )
             u_net_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
                 u_net_lion,
@@ -353,13 +375,24 @@ def create_lion_optimizer_states(
             text_encoder_constant_scheduler = optax.constant_schedule(
                 text_encoder_learning_rate / adam_to_lion_scale_factor
             )
-            text_encoder_lion = optax.lion(
-                learning_rate=text_encoder_constant_scheduler,
-                b1=0.9,
-                b2=0.99,
-                weight_decay=1e-2 * adam_to_lion_scale_factor,
-                mask=text_encoder_weight_decay_mask,
-            )
+            if lion_8bit_block_size:
+                text_encoder_lion = lion_8bit(
+                    learning_rate=text_encoder_constant_scheduler,
+                    b1=0.9,
+                    b2=0.99,
+                    weight_decay=1e-2 * adam_to_lion_scale_factor,
+                    mask=text_encoder_weight_decay_mask,
+                    block_size=lion_8bit_block_size,
+                    exclude_layer=excluded_layer_from_quantization
+                )
+            else:
+                text_encoder_lion = optax.lion(
+                    learning_rate=text_encoder_constant_scheduler,
+                    b1=0.9,
+                    b2=0.99,
+                    weight_decay=1e-2 * adam_to_lion_scale_factor,
+                    mask=text_encoder_weight_decay_mask,
+                )
             text_encoder_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
                 text_encoder_lion,
@@ -381,7 +414,9 @@ def on_device_model_training_state(training_config: TrainingConfig):
         train_text_encoder=True,
         train_unet=True,
         adam_to_lion_scale_factor=7,
-        excluded_layer_pattern_from_weight_decay=training_config.excluded_layer_pattern_from_weight_decay
+        excluded_layer_pattern_from_weight_decay=training_config.excluded_layer_pattern_from_weight_decay,
+        excluded_layer_from_quantization=training_config.excluded_layer_from_quantization,
+        lion_8bit_block_size=training_config.quant_block_size
     )
     frozen_states = create_frozen_states(
         models=models,

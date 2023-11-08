@@ -19,6 +19,17 @@
         "scale",
         "embedding"
     ],
+    "excluded_layer_from_quantization": [
+        "bias",
+        "scale",
+        "embedding",
+        "conv_in",
+        "conv_out",
+        "time_embedding",
+        "embeddings",
+        "time_emb_proj"
+    ],
+    "quant_block_size": 16,
     "image_area_root": [
         576,
         704,
