@@ -71,11 +71,10 @@ def scale_by_lion_8bit(
         # rescale the weight
         scales = jnp.max(jnp.abs(leaf), axis=-1, keepdims=True)
         # just in case the abs max scale is zero convert it to 1 to prevent zero division
-        scales = jnp.where(
+        scales = 1 / jnp.where(
             scales <= min_norm, jnp.ones_like(scales, dtype=mu_scale_dtype), scales
         )
-        leaf = leaf / scales
-
+        leaf = leaf * scales
         # quantization happen after rescaling
         leaf = _quantize(leaf)
         return leaf, scales
@@ -88,7 +87,7 @@ def scale_by_lion_8bit(
         # dequant before rescale
         leaf = _dequantize(leaf)
         # flatten then reshape it back to the original shape
-        leaf = (leaf * scales).reshape(-1)
+        leaf = (leaf / scales).reshape(-1)
         leaf = leaf.reshape(leaf_shape.shape)
         return leaf 
 
