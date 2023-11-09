@@ -77,11 +77,12 @@ class TrainingConfig:
         "image_area_root": [576, 704, 832, 960, 1088],
         "minimum_axis_length": [384, 512, 576, 704, 832],
         "beta_scheduler": "zero_snr_scaled_linear",
-        "prediction_type": "v_prediction"
-        "excluded_layer_pattern_from_weight_decay": ["bias", "scale", "embedding"]
-        "excluded_layer_from_quantization": ["bias", "scale", "embedding"]
-        "quant_block_size": 16
-
+        "prediction_type": "v_prediction",
+        "excluded_layer_pattern_from_weight_decay": ["bias", "scale", "embedding"],
+        "excluded_layer_from_quantization": ["bias", "scale", "embedding"],
+        "quant_block_size": 16,
+        "quantize_unet_state":true,
+        "quantize_text_encoder_state": true,
     }
     """
 
@@ -104,6 +105,8 @@ class TrainingConfig:
     excluded_layer_pattern_from_weight_decay: list
     excluded_layer_from_quantization: list
     quant_block_size: int
+    quantize_unet_state: bool
+    quantize_text_encoder_state: bool
     
 
 def create_mask(pytree: dict, excluded_layer_list:list):
@@ -278,6 +281,8 @@ def create_lion_optimizer_states(
     excluded_layer_pattern_from_weight_decay: list = [],
     excluded_layer_from_quantization: list = [],
     lion_8bit_block_size:int = None,
+    quantize_unet_state:bool = False,
+    quantize_text_encoder_state:bool = False,
 ):
     """
     Create optimizer states for Lion, a custom optimizer, for U-Net and CLIP text encoder models.
@@ -303,6 +308,8 @@ def create_lion_optimizer_states(
         excluded_layer_from_quantization (list): layer name that is excluded from 8 bit quantization.
         lion_8bit_block_size (int): 
             block chunks for 8bit aproximation for the optimizer states, if none use regular lion instead 
+        quantize_unet_state: whether to quantize U-Net state.
+        quantize_text_encoder_state: whether to quantize text encoder state.
 
     Returns:
         dict: A dictionary containing the optimizer states for U-Net and text encoder models.
@@ -336,7 +343,7 @@ def create_lion_optimizer_states(
             u_net_constant_scheduler = optax.constant_schedule(
                 u_net_learning_rate / adam_to_lion_scale_factor
             )
-            if lion_8bit_block_size:
+            if quantize_unet_state:
                 unet_quant_mask = create_mask(models["unet"]["unet_params"], excluded_layer_from_quantization)
                 u_net_lion = lion_8bit(
                     learning_rate=u_net_constant_scheduler,
@@ -370,7 +377,7 @@ def create_lion_optimizer_states(
             text_encoder_constant_scheduler = optax.constant_schedule(
                 text_encoder_learning_rate / adam_to_lion_scale_factor
             )
-            if lion_8bit_block_size:
+            if quantize_text_encoder_state:
                 text_encoder_quant_mask = create_mask(models["text_encoder"]["text_encoder_params"], excluded_layer_from_quantization)
                 text_encoder_lion = lion_8bit(
                     learning_rate=text_encoder_constant_scheduler,
@@ -412,7 +419,9 @@ def on_device_model_training_state(training_config: TrainingConfig):
         adam_to_lion_scale_factor=7,
         excluded_layer_pattern_from_weight_decay=training_config.excluded_layer_pattern_from_weight_decay,
         excluded_layer_from_quantization=training_config.excluded_layer_from_quantization,
-        lion_8bit_block_size=training_config.quant_block_size
+        lion_8bit_block_size=training_config.quant_block_size,
+        quantize_unet_state=training_config.quantize_unet_state,
+        quantize_text_encoder_state=training_config.quantize_text_encoder_state,
     )
     frozen_states = create_frozen_states(
         models=models,

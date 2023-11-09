@@ -29,6 +29,8 @@
         "embeddings",
         "time_emb_proj"
     ],
+    "quantize_unet_state": true,
+    "quantize_text_encoder_state": true,
     "quant_block_size": 16,
     "image_area_root": [
         576,
