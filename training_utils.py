@@ -70,6 +70,7 @@ class TrainingConfig:
         "strip_bos_eos_token": true,
         "offset_noise_magnitude": 0.0,
         "min_snr_gamma_magnitude": 0.0,
+        "perturbation_noise_magnitude": 0.0,
         "image_area_root": [576, 704, 832, 960, 1088],
         "minimum_axis_length": [384, 512, 576, 704, 832],
         "beta_scheduler": "zero_snr_scaled_linear",
@@ -97,6 +98,7 @@ class TrainingConfig:
     strip_bos_eos_token: bool
     offset_noise_magnitude: float
     min_snr_gamma_magnitude: float
+    perturbation_noise_magnitude: float
     image_area_root: list
     minimum_axis_length: list
     beta_scheduler: str
@@ -473,6 +475,7 @@ def train_step(
     strip_bos_eos_token: bool = True,
     offset_noise_magnitude: float = 0.0,
     min_snr_gamma_magnitude: float = 0.0,
+    perturbation_noise_magnitude: float = 0.0,
 ):
     """
     this jittable trainstep function just lightly wraps
@@ -533,14 +536,15 @@ def train_step(
 
         # Sample noise that we'll add to the latents
         # I think I should combine this with the first noise seed generator
-        noise_offset_rng, noise_rng, timestep_rng = jax.random.split(
-            key=sample_rng, num=3
+        noise_offset_rng, noise_rng, perturb_noise_rng, timestep_rng = jax.random.split(
+            key=sample_rng, num=4
         )
         noise = jax.random.normal(key=noise_rng, shape=latents.shape)
         if offset_noise_magnitude:
             print(offset_noise_magnitude)
             # mean offset noise, why add offset?
             # here https://www.crosslabs.org//blog/diffusion-with-offset-noise
+            # TL:DR let SD wanders off from true mean 
             noise_offset = (
                 jax.random.normal(
                     key=noise_offset_rng,
@@ -549,6 +553,15 @@ def train_step(
                 * offset_noise_magnitude
             )
             noise = noise + noise_offset
+
+        if perturbation_noise_magnitude:
+            print(perturbation_noise_magnitude)
+            # more or less similar to the offset noise
+            # and apparently the paper retracted soo ¯\_(ツ)_/¯
+            # leaving this here for compartibility reasons more than anything.
+            noise = noise + perturbation_noise_magnitude * jax.random.normal(
+                perturb_noise_rng, latents.shape
+            )
 
         # Sample a random timestep for each image
         batch_size = latents.shape[0]
@@ -798,6 +811,7 @@ def dp_compile_all_unique_resolution(
                 "strip_bos_eos_token",
                 "offset_noise_magnitude",
                 "min_snr_gamma_magnitude",
+                "perturbation_noise_magnitude",
             ),
             out_shardings=(
                 jax.tree_map(
@@ -829,6 +843,7 @@ def dp_compile_all_unique_resolution(
                 training_config.strip_bos_eos_token,
                 training_config.offset_noise_magnitude,
                 training_config.min_snr_gamma_magnitude,
+                training_config.perturbation_noise_magnitude,
             )
             # store in dict
             # lowered_hlos[f"{bucket_resolution[0]},{bucket_resolution[1]}"] = lowered_hlo
