@@ -14,6 +14,9 @@
     "beta_scheduler": "zero_snr_scaled_linear",
     "prediction_type": "v_prediction",
     "aot_compile": true,
+    "strip_bos_eos_token": true,
+    "offset_noise_magnitude": 0.0,
+    "min_snr_gamma_magnitude": 0.0,
     "excluded_layer_pattern_from_weight_decay": [
         "bias",
         "scale",

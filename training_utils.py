@@ -48,13 +48,6 @@ class FrozenModel(struct.PyTreeNode):
     call: Callable = struct.field(pytree_node=False)
     params: dict = struct.field(pytree_node=True)
 
-    @classmethod
-    def create(cls, apply_fn, params):
-        return cls(
-            call=call,
-            params=params,
-        )
-
 
 @dataclass
 class TrainingConfig:
@@ -74,6 +67,9 @@ class TrainingConfig:
         "text_encoder_context_window": 77,
         "context_window_concatenation_count": 3,
         "aot_compile": true,
+        "strip_bos_eos_token": true,
+        "offset_noise_magnitude": 0.0,
+        "min_snr_gamma_magnitude": 0.0,
         "image_area_root": [576, 704, 832, 960, 1088],
         "minimum_axis_length": [384, 512, 576, 704, 832],
         "beta_scheduler": "zero_snr_scaled_linear",
@@ -98,6 +94,9 @@ class TrainingConfig:
     text_encoder_context_window: int
     context_window_concatenation_count: int
     aot_compile: bool
+    strip_bos_eos_token: bool
+    offset_noise_magnitude: float
+    min_snr_gamma_magnitude: float
     image_area_root: list
     minimum_axis_length: list
     beta_scheduler: str
@@ -471,8 +470,9 @@ def train_step(
     frozen_vae_state: Any,
     frozen_noise_scheduler_state: Any,  # welp technically not a trainable by any means
     # static args
-    use_offset_noise: bool = False,
     strip_bos_eos_token: bool = True,
+    offset_noise_magnitude: float = 0.0,
+    min_snr_gamma_magnitude: float = 0.0,
 ):
     """
     this jittable trainstep function just lightly wraps
@@ -482,6 +482,36 @@ def train_step(
     # generate rng and return new_train_rng to be used for the next iteration step
     # rng is comunicated though device aparently
     dropout_rng, sample_rng, new_train_rng = jax.random.split(train_rng, num=3)
+
+    def compute_snrs(alphas_cumprod):
+        # derive snr for each timesteps from the timestep scheduler
+        snrs = alphas_cumprod / (1 - alphas_cumprod)
+        return snrs
+
+    def min_snr_gamma_loss_rescale(loss, timesteps, snr, gamma):
+        """decay / attenuate loss at the later timestep with some clamping""" 
+        # compute all SNR for each timesteps
+        alphas_cumprod = frozen_noise_scheduler_state.common.alphas_cumprod
+        snrs = compute_snrs(alphas_cumprod)
+
+        # grab relevant SNR at timesteps
+        snr = jnp.stack([snrs[t] for t in timesteps])
+
+        # this clamping clamps early loss scale to gamma so during early reverse diffusion
+        # it it doesn't get attenuated and only attenuate the later timesteps where the image
+        # is "almost complete"
+        min_snr_gamma = jnp.minimum(snr, gamma)
+
+        # some rescaling if using v_prediction but i doubt it's correct because 
+        # the SNR weight is decaying at earlier timesteps but i gonna keep this as an option ¯\_(ツ)_/¯
+        if (frozen_noise_scheduler_state.prediction_type == "v_prediction"):
+            snr_weight = jnp.divide(min_snr_gamma, snr + 1).astype(jnp.float32)
+        else:
+            snr_weight = jnp.divide(min_snr_gamma, snr).astype(jnp.float32)
+        snr_weight = jnp.expand_dims(snr_weight, axis=(1, 2, 3))
+        loss = loss * snr_weight
+        return loss
+
 
     def compute_loss(
         unet_params, text_encoder_params, vae_params, noise_scheduler_state, batch
@@ -507,7 +537,7 @@ def train_step(
             key=sample_rng, num=3
         )
         noise = jax.random.normal(key=noise_rng, shape=latents.shape)
-        if use_offset_noise:
+        if offset_noise_magnitude:
             # mean offset noise, why add offset?
             # here https://www.crosslabs.org//blog/diffusion-with-offset-noise
             noise_offset = (
@@ -515,7 +545,7 @@ def train_step(
                     key=noise_offset_rng,
                     shape=(latents.shape[0], latents.shape[1], 1, 1),
                 )
-                * 0.1
+                * offset_noise_magnitude
             )
             noise = noise + noise_offset
 
@@ -608,7 +638,9 @@ def train_step(
         # MSE loss
         loss = (target - model_pred) ** 2
         loss = loss.mean()
-
+        # loss rescaling and reweighting method
+        if min_snr_gamma_magnitude:
+            loss = apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma_magnitude)
         return loss
 
     # perform autograd
@@ -757,16 +789,13 @@ def dp_compile_all_unique_resolution(
                     lambda leaf: NamedSharding(mesh, PartitionSpec()),
                     frozen_schedulers,
                 ),
-                # use_offset_noise
-                # None, # moved to static
-                # strip_bos_eos_token
-                # None, # moved to static
             ),
             # compiled as static value
             # only hashable one!
             static_argnames=(
-                "use_offset_noise",
                 "strip_bos_eos_token",
+                "offset_noise_magnitude",
+                "min_snr_gamma_magnitude",
             ),
             out_shardings=(
                 jax.tree_map(
@@ -795,8 +824,9 @@ def dp_compile_all_unique_resolution(
                 frozen_vae,  # frozen_vae_state
                 frozen_schedulers,  # frozen_noise_scheduler_state
                 # static args
-                False,  # use_offset_noise
-                True,  # strip_bos_eos_token
+                training_config.strip_bos_eos_token,
+                training_config.offset_noise_magnitude,
+                training_config.min_snr_gamma_magnitude,
             )
             # store in dict
             # lowered_hlos[f"{bucket_resolution[0]},{bucket_resolution[1]}"] = lowered_hlo
