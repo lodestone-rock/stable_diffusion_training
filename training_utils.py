@@ -488,10 +488,10 @@ def train_step(
         snrs = alphas_cumprod / (1 - alphas_cumprod)
         return snrs
 
-    def min_snr_gamma_loss_rescale(loss, timesteps, snr, gamma):
+    def min_snr_gamma_loss_rescale(loss, timesteps, gamma):
         """decay / attenuate loss at the later timestep with some clamping""" 
         # compute all SNR for each timesteps
-        alphas_cumprod = frozen_noise_scheduler_state.common.alphas_cumprod
+        alphas_cumprod = frozen_noise_scheduler_state.params.common.alphas_cumprod
         snrs = compute_snrs(alphas_cumprod)
 
         # grab relevant SNR at timesteps
@@ -504,7 +504,7 @@ def train_step(
 
         # some rescaling if using v_prediction but i doubt it's correct because 
         # the SNR weight is decaying at earlier timesteps but i gonna keep this as an option ¯\_(ツ)_/¯
-        if (frozen_noise_scheduler_state.prediction_type == "v_prediction"):
+        if (frozen_noise_scheduler_state.call.prediction_type == "v_prediction"):
             snr_weight = jnp.divide(min_snr_gamma, snr + 1).astype(jnp.float32)
         else:
             snr_weight = jnp.divide(min_snr_gamma, snr).astype(jnp.float32)
@@ -538,6 +538,7 @@ def train_step(
         )
         noise = jax.random.normal(key=noise_rng, shape=latents.shape)
         if offset_noise_magnitude:
+            print(offset_noise_magnitude)
             # mean offset noise, why add offset?
             # here https://www.crosslabs.org//blog/diffusion-with-offset-noise
             noise_offset = (
@@ -637,10 +638,11 @@ def train_step(
 
         # MSE loss
         loss = (target - model_pred) ** 2
-        loss = loss.mean()
         # loss rescaling and reweighting method
         if min_snr_gamma_magnitude:
-            loss = apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma_magnitude)
+            print(min_snr_gamma_magnitude)
+            loss = min_snr_gamma_loss_rescale(loss, timesteps, min_snr_gamma_magnitude)
+        loss = loss.mean()
         return loss
 
     # perform autograd
