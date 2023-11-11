@@ -37,7 +37,7 @@ def scale_by_lion_8bit(
         block_size: Optional `int` quantization block size.
         excluded_layer_mask: A tree with same structure as (or a prefix of) your params PyTree.
         The leaves should be booleans, `True` for leaves/subtrees you want to
-        apply the quantization to, and `False` for those you want to skip. 
+        apply the quantization to, and `False` for those you want to skip.
 
     Returns:
         A `GradientTransformation` object.
@@ -89,7 +89,7 @@ def scale_by_lion_8bit(
         # flatten then reshape it back to the original shape
         leaf = (leaf / scales).reshape(-1)
         leaf = leaf.reshape(leaf_shape.shape)
-        return leaf 
+        return leaf
 
     def _is_quantized(node):
         return isinstance(node, tuple)
@@ -102,21 +102,33 @@ def scale_by_lion_8bit(
             # https://github.com/google/jax/discussions/12826#discussioncomment-3894462
             # according to douglas first argument is used to infer tree structure so i dont have to do
             # anything special with state.mu_quant (a tuple)
-            lambda g, t, shape: _block_quantize((1 - decay) * (g**order) + decay * _block_dequantize(shape, *t)) if _is_quantized(t) else (1 - decay) * (g**order) + decay * t,
+            lambda g, t, shape: _block_quantize(
+                (1 - decay) * (g**order) + decay * _block_dequantize(shape, *t)
+            )
+            if _is_quantized(t)
+            else (1 - decay) * (g**order) + decay * t,
             updates,  # the leaf is pure array
             moments,  # the leaf is a quantization params
-            param_shape
+            param_shape,
         )
 
     def init_fn(params):
         # this one is the same shape as the param itself
         mu_quant = jax.tree_util.tree_map_with_path(  # moment
             # _block_quantize will quantize it if the flag is true, else it will stay the same
-            lambda leaf, t, flag: _block_quantize(jnp.zeros_like(t, dtype=mu_scale_dtype)) if flag else jnp.zeros_like(t, dtype=mu_scale_dtype), 
-            params, 
-            excluded_layer_mask
+            lambda leaf, t, flag: _block_quantize(
+                jnp.zeros_like(t, dtype=mu_scale_dtype)
+            )
+            if flag
+            else jnp.zeros_like(t, dtype=mu_scale_dtype),
+            params,
+            excluded_layer_mask,
         )
-        return ScaleBy8bitLionState(count=jnp.zeros([], jnp.int32), mu_quant=mu_quant, mu_quant_flag=excluded_layer_mask)
+        return ScaleBy8bitLionState(
+            count=jnp.zeros([], jnp.int32),
+            mu_quant=mu_quant,
+            mu_quant_flag=excluded_layer_mask,
+        )
 
     def update_fn(updates, state, params=None):
         del params
@@ -126,14 +138,20 @@ def scale_by_lion_8bit(
             # according to douglas first argument is used to infer tree structure so i dont have to do
             # anything special with state.mu_quant (a tuple)
             # _block_dequantize dequant the mu back and returning a tuple of quantized params
-            lambda g, m, shape:jnp.sign((1.0 - b1) * g + b1 * _block_dequantize(shape, *m)) if _is_quantized(m) else jnp.sign((1.0 - b1) * g + b1 * m), 
+            lambda g, m, shape: jnp.sign(
+                (1.0 - b1) * g + b1 * _block_dequantize(shape, *m)
+            )
+            if _is_quantized(m)
+            else jnp.sign((1.0 - b1) * g + b1 * m),
             updates,
             state.mu_quant,
-            param_shape
+            param_shape,
         )
         mu_quant = _update_moment_quant(updates, state.mu_quant, b2, 1)
         count_inc = numerics.safe_int32_increment(state.count)
-        return updates_new, ScaleBy8bitLionState(count=count_inc, mu_quant=mu_quant, mu_quant_flag=state.mu_quant_flag)
+        return updates_new, ScaleBy8bitLionState(
+            count=count_inc, mu_quant=mu_quant, mu_quant_flag=state.mu_quant_flag
+        )
 
     return base.GradientTransformation(init_fn, update_fn)
 
@@ -176,13 +194,17 @@ def lion_8bit(
         that the Adam gradient transformations are applied to all parameters.
         excluded_layer_mask: A tree with same structure as (or a prefix of) your params PyTree.
         The leaves should be booleans, `True` for leaves/subtrees you want to
-        apply the quantization to, and `False` for those you want to skip. 
+        apply the quantization to, and `False` for those you want to skip.
     Returns:
         The corresponding `GradientTransformation`.
     """
     return combine.chain(
         scale_by_lion_8bit(
-            b1=b1, b2=b2, mu_scale_dtype=mu_scale_dtype, block_size=block_size, excluded_layer_mask=excluded_layer_mask
+            b1=b1,
+            b2=b2,
+            mu_scale_dtype=mu_scale_dtype,
+            block_size=block_size,
+            excluded_layer_mask=excluded_layer_mask,
         ),
         transform.add_decayed_weights(weight_decay, mask),
         _scale_by_learning_rate(learning_rate),
