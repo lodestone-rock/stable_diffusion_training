@@ -108,10 +108,14 @@ class TrainingConfig:
     quant_block_size: int
     quantize_unet_state: bool
     quantize_text_encoder_state: bool
-    
+    accumulate_unet_ema: bool
+    accumulate_text_encoder_ema: bool
+    ema_rate: float
 
-def create_mask(pytree: dict, excluded_layer_list:list):
+
+def create_mask(pytree: dict, excluded_layer_list: list):
     """create a boolean mask default is true"""
+
     # convert the dict name to key (im assuming the dict name is just a string here)
     def _create_mask(leaf_name):
         layer_name_hiearch = tuple(key.key for key in leaf_name)
@@ -121,9 +125,11 @@ def create_mask(pytree: dict, excluded_layer_list:list):
         for excluded in excluded_layer_list:
             if excluded in layer_name_hiearch:
                 is_included = False
-                break       
+                break
         return is_included
+
     return jax.tree_util.tree_map_with_path(lambda leaf, _: _create_mask(leaf), pytree)
+
 
 def calculate_resolution_array(
     max_res_area=512**2, bucket_lower_bound_res=256, rounding=64
@@ -281,9 +287,9 @@ def create_lion_optimizer_states(
     text_encoder_learning_rate: float = 1e-6,
     excluded_layer_pattern_from_weight_decay: list = [],
     excluded_layer_from_quantization: list = [],
-    lion_8bit_block_size:int = None,
-    quantize_unet_state:bool = False,
-    quantize_text_encoder_state:bool = False,
+    lion_8bit_block_size: int = None,
+    quantize_unet_state: bool = False,
+    quantize_text_encoder_state: bool = False,
 ):
     """
     Create optimizer states for Lion, a custom optimizer, for U-Net and CLIP text encoder models.
@@ -307,8 +313,8 @@ def create_lion_optimizer_states(
         text_encoder_learning_rate (float): text encoder learning rate.
         excluded_layer_from_weight_decay (list): layer name that is excluded from weight decay.
         excluded_layer_from_quantization (list): layer name that is excluded from 8 bit quantization.
-        lion_8bit_block_size (int): 
-            block chunks for 8bit aproximation for the optimizer states, if none use regular lion instead 
+        lion_8bit_block_size (int):
+            block chunks for 8bit aproximation for the optimizer states, if none use regular lion instead
         quantize_unet_state: whether to quantize U-Net state.
         quantize_text_encoder_state: whether to quantize text encoder state.
 
@@ -336,8 +342,13 @@ def create_lion_optimizer_states(
         unet_weight_decay_mask = None
         text_encoder_weight_decay_mask = None
     else:
-        unet_weight_decay_mask = create_mask(models["unet"]["unet_params"], excluded_layer_pattern_from_weight_decay)
-        text_encoder_weight_decay_mask = create_mask(models["text_encoder"]["text_encoder_params"], excluded_layer_pattern_from_weight_decay)
+        unet_weight_decay_mask = create_mask(
+            models["unet"]["unet_params"], excluded_layer_pattern_from_weight_decay
+        )
+        text_encoder_weight_decay_mask = create_mask(
+            models["text_encoder"]["text_encoder_params"],
+            excluded_layer_pattern_from_weight_decay,
+        )
 
     with jax.default_device(jax.devices("cpu")[0]):
         if train_unet:
@@ -345,7 +356,9 @@ def create_lion_optimizer_states(
                 u_net_learning_rate / adam_to_lion_scale_factor
             )
             if quantize_unet_state:
-                unet_quant_mask = create_mask(models["unet"]["unet_params"], excluded_layer_from_quantization)
+                unet_quant_mask = create_mask(
+                    models["unet"]["unet_params"], excluded_layer_from_quantization
+                )
                 u_net_lion = lion_8bit(
                     learning_rate=u_net_constant_scheduler,
                     b1=0.9,
@@ -353,7 +366,7 @@ def create_lion_optimizer_states(
                     weight_decay=1e-2 * adam_to_lion_scale_factor,
                     mask=unet_weight_decay_mask,
                     block_size=lion_8bit_block_size,
-                    excluded_layer_mask=unet_quant_mask
+                    excluded_layer_mask=unet_quant_mask,
                 )
             else:
                 u_net_lion = optax.lion(
@@ -379,7 +392,10 @@ def create_lion_optimizer_states(
                 text_encoder_learning_rate / adam_to_lion_scale_factor
             )
             if quantize_text_encoder_state:
-                text_encoder_quant_mask = create_mask(models["text_encoder"]["text_encoder_params"], excluded_layer_from_quantization)
+                text_encoder_quant_mask = create_mask(
+                    models["text_encoder"]["text_encoder_params"],
+                    excluded_layer_from_quantization,
+                )
                 text_encoder_lion = lion_8bit(
                     learning_rate=text_encoder_constant_scheduler,
                     b1=0.9,
@@ -387,7 +403,7 @@ def create_lion_optimizer_states(
                     weight_decay=1e-2 * adam_to_lion_scale_factor,
                     mask=text_encoder_weight_decay_mask,
                     block_size=lion_8bit_block_size,
-                    excluded_layer_mask=text_encoder_quant_mask
+                    excluded_layer_mask=text_encoder_quant_mask,
                 )
             else:
                 text_encoder_lion = optax.lion(
@@ -443,6 +459,28 @@ def on_device_model_training_state(training_config: TrainingConfig):
         lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())),
         frozen_states["schedulers_state"],
     )
+    # create ema state by deep copying
+    # only use ema for later stage of training since this mode require
+    # full tree copy of the entire param and easily consume equal ammount of
+    # model size
+    if training_config.accumulate_unet_ema:
+        unet_ema_params = jax.tree_map(
+            lambda leaf: jax.device_put(
+                leaf, device=NamedSharding(mesh, PartitionSpec())
+            ),
+            models["unet"]["unet_params"],
+        )
+    else:
+        unet_ema_params = None
+    if training_config.accumulate_text_encoder_ema:
+        text_encoder_ema_params = jax.tree_map(
+            lambda leaf: jax.device_put(
+                leaf, device=NamedSharding(mesh, PartitionSpec())
+            ),
+            models["text_encoder"]["text_encoder_params"],
+        )
+    else:
+        text_encoder_ema_params = None
 
     # return this object for saving purposes
     model_object_dict = {
@@ -455,6 +493,8 @@ def on_device_model_training_state(training_config: TrainingConfig):
     return (
         unet_state,
         text_encoder_state,
+        unet_ema_params,
+        text_encoder_ema_params,
         frozen_vae,
         frozen_schedulers,
         model_object_dict,
@@ -465,6 +505,8 @@ def train_step(
     # donated args
     unet_state: Any,  # define sharding rule!
     text_encoder_state: Any,  # define sharding rule!
+    unet_ema_params: dict,
+    text_encoder_ema_params: dict,
     # variable args
     batch: dict,  # define sharding rule!
     train_rng: jax.random.PRNGKey,  # define sharding rule!
@@ -476,6 +518,7 @@ def train_step(
     offset_noise_magnitude: float = 0.0,
     min_snr_gamma_magnitude: float = 0.0,
     perturbation_noise_magnitude: float = 0.0,
+    ema_rate: float = 0.0,
 ):
     """
     this jittable trainstep function just lightly wraps
@@ -491,8 +534,17 @@ def train_step(
         snrs = alphas_cumprod / (1 - alphas_cumprod)
         return snrs
 
+    def compute_model_ema(ema_params, update_params):
+        """Exponential moving average smoothing to update model parameters"""
+        return jax.tree_map(
+            lambda leaf_ema, leaf_model: ema_rate * leaf_ema
+            + (1 - ema_rate) * leaf_model,
+            ema_params,
+            update_params,
+        )
+
     def min_snr_gamma_loss_rescale(loss, timesteps, gamma):
-        """decay / attenuate loss at the later timestep with some clamping""" 
+        """decay / attenuate loss at the later timestep with some clamping"""
         # compute all SNR for each timesteps
         alphas_cumprod = frozen_noise_scheduler_state.params.common.alphas_cumprod
         snrs = compute_snrs(alphas_cumprod)
@@ -505,16 +557,15 @@ def train_step(
         # is "almost complete"
         min_snr_gamma = jnp.minimum(snr, gamma)
 
-        # some rescaling if using v_prediction but i doubt it's correct because 
+        # some rescaling if using v_prediction but i doubt it's correct because
         # the SNR weight is decaying at earlier timesteps but i gonna keep this as an option ¯\_(ツ)_/¯
-        if (frozen_noise_scheduler_state.call.prediction_type == "v_prediction"):
+        if frozen_noise_scheduler_state.call.prediction_type == "v_prediction":
             snr_weight = jnp.divide(min_snr_gamma, snr + 1).astype(jnp.float32)
         else:
             snr_weight = jnp.divide(min_snr_gamma, snr).astype(jnp.float32)
         snr_weight = jnp.expand_dims(snr_weight, axis=(1, 2, 3))
         loss = loss * snr_weight
         return loss
-
 
     def compute_loss(
         unet_params, text_encoder_params, vae_params, noise_scheduler_state, batch
@@ -544,7 +595,7 @@ def train_step(
             print(offset_noise_magnitude)
             # mean offset noise, why add offset?
             # here https://www.crosslabs.org//blog/diffusion-with-offset-noise
-            # TL:DR let SD wanders off from true mean 
+            # TL:DR let SD wanders off from true mean
             noise_offset = (
                 jax.random.normal(
                     key=noise_offset_rng,
@@ -681,6 +732,19 @@ def train_step(
     new_unet_state = unet_state.apply_gradients(grads=grad[0])
     new_text_encoder_state = text_encoder_state.apply_gradients(grads=grad[1])
 
+    if ema_rate and unet_ema_params:
+        print(ema_rate)
+        new_unet_ema_params = compute_model_ema(unet_ema_params, new_unet_state.params)
+    else:
+        new_unet_ema_params = None
+    if ema_rate and text_encoder_ema_params:
+        print(ema_rate)
+        new_text_encoder_ema_params = compute_model_ema(
+            text_encoder_ema_params, new_text_encoder_state.params
+        )
+    else:
+        new_text_encoder_ema_params = None
+
     # calculate loss
     metrics = {"loss": loss}
 
@@ -688,12 +752,21 @@ def train_step(
     # but just in case i put the donated args with the same position as the input
     # donated args are new_unet_state and new_text_encoder_state since it has the same
     # data structure so inplace update is good
-    return new_unet_state, new_text_encoder_state, metrics, new_train_rng
+    return (
+        new_unet_state,
+        new_text_encoder_state,
+        new_unet_ema_params,
+        new_text_encoder_ema_params,
+        metrics,
+        new_train_rng,
+    )
 
 
 def dp_compile_all_unique_resolution(
     unet_state,
     text_encoder_state,
+    unet_ema_params,
+    text_encoder_ema_params,
     frozen_vae,
     frozen_schedulers,
     training_config: TrainingConfig,
@@ -773,6 +846,8 @@ def dp_compile_all_unique_resolution(
             donate_argnums=(
                 0,  # "unet_state"
                 1,  # "text_encoder_state"
+                2,  # if training_config.accumulate_unet_ema else None,
+                3,  # if training_config.accumulate_text_encoder_ema else None,
             ),
             in_shardings=(
                 # unet_state
@@ -785,6 +860,20 @@ def dp_compile_all_unique_resolution(
                     lambda leaf: NamedSharding(mesh, PartitionSpec()),
                     text_encoder_state,
                 ),
+                # unet_ema_params
+                jax.tree_map(
+                    lambda leaf: NamedSharding(mesh, PartitionSpec()),
+                    unet_ema_params,
+                )
+                if training_config.accumulate_unet_ema
+                else None,
+                # text_encoder_ema_params
+                jax.tree_map(
+                    lambda leaf: NamedSharding(mesh, PartitionSpec()),
+                    text_encoder_ema_params,
+                )
+                if training_config.accumulate_text_encoder_ema
+                else None,
                 # batch
                 jax.tree_map(
                     lambda leaf: NamedSharding(
@@ -812,6 +901,7 @@ def dp_compile_all_unique_resolution(
                 "offset_noise_magnitude",
                 "min_snr_gamma_magnitude",
                 "perturbation_noise_magnitude",
+                "ema_rate",
             ),
             out_shardings=(
                 jax.tree_map(
@@ -822,6 +912,20 @@ def dp_compile_all_unique_resolution(
                     lambda leaf: NamedSharding(mesh, PartitionSpec()),
                     text_encoder_state,
                 ),
+                # unet_ema_params
+                jax.tree_map(
+                    lambda leaf: NamedSharding(mesh, PartitionSpec()),
+                    unet_ema_params,
+                )
+                if training_config.accumulate_unet_ema
+                else None,
+                # text_encoder_ema_params
+                jax.tree_map(
+                    lambda leaf: NamedSharding(mesh, PartitionSpec()),
+                    text_encoder_ema_params,
+                )
+                if training_config.accumulate_text_encoder_ema
+                else None,
                 {"loss": NamedSharding(mesh, PartitionSpec())},
                 None,
             ),
@@ -833,6 +937,8 @@ def dp_compile_all_unique_resolution(
                 # donated args
                 unet_state,  # unet_state
                 text_encoder_state,  # text_encoder_state
+                unet_ema_params,
+                text_encoder_ema_params,
                 # variable args
                 batch,  # batch
                 dummy_rngs,  # train_rng
@@ -844,6 +950,7 @@ def dp_compile_all_unique_resolution(
                 training_config.offset_noise_magnitude,
                 training_config.min_snr_gamma_magnitude,
                 training_config.perturbation_noise_magnitude,
+                training_config.ema_rate,
             )
             # store in dict
             # lowered_hlos[f"{bucket_resolution[0]},{bucket_resolution[1]}"] = lowered_hlo

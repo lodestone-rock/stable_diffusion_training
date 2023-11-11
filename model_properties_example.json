@@ -35,6 +35,9 @@
     ],
     "quantize_unet_state": true,
     "quantize_text_encoder_state": true,
+    "accumulate_unet_ema": true,
+    "accumulate_text_encoder_ema": true,
+    "ema_rate": 0.99998,
     "quant_block_size": 16,
     "image_area_root": [
         576,
