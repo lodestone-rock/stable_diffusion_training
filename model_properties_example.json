@@ -68,7 +68,9 @@
             "image_height_col_name": "image_height",
             "caption_col": "caption",
             "filename_col": "filename",
-            "coma_separated_shuffle": true
+            "coma_separated_shuffle": true,
+            "max_tag_count": 20,
+            "drop_caption_ratio": 0.9
         },
         "repo_1": {
             "csv_path": "laion_audited.csv",

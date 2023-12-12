@@ -75,6 +75,9 @@ def main():
         seed=config_dict[
             "master_seed"
         ],  # This should be incremented when all batches are processed
+        context_concatenation_multiplier=config_dict[
+            "context_window_concatenation_count"
+        ],  # number of concatenated clip token
     )
 
     # disable debug print
