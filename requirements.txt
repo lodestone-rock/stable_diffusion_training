@@ -1,4 +1,4 @@
-diffusers==0.21.4
+diffusers
 optax
 flax
 black
@@ -6,3 +6,4 @@ tf-nightly
 tb-nightly
 tbp-nightly
 tqdm
+transformers
