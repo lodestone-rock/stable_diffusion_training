@@ -6,6 +6,7 @@ __pycache__
 model_checkpoints/
 *.json
 !vega_unet_layer_mapping.json
+!vega_clip_layer_mapping.json
 ramdisk/
 *.log
 tensorboard/
