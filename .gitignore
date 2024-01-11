@@ -5,7 +5,7 @@ init.sh
 __pycache__
 model_checkpoints/
 *.json
-!unet_layer_mapping.json
+!vega_unet_layer_mapping.json
 ramdisk/
 *.log
 tensorboard/
