@@ -434,6 +434,8 @@ def on_device_model_training_state(training_config: TrainingConfig):
         train_text_encoder=True,
         train_unet=True,
         adam_to_lion_scale_factor=7,
+        u_net_learning_rate=training_config.unet_learning_rate,
+        text_encoder_learning_rate=training_config.text_encoder_learning_rate,
         excluded_layer_pattern_from_weight_decay=training_config.excluded_layer_pattern_from_weight_decay,
         excluded_layer_from_quantization=training_config.excluded_layer_from_quantization,
         lion_8bit_block_size=training_config.quant_block_size,
