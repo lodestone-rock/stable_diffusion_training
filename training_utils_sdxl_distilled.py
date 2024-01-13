@@ -214,7 +214,7 @@ def load_models(training_config: TrainingConfig) -> dict:
         model_dir,
         subfolder="unet",
         dtype=jnp.bfloat16,
-        use_memory_efficient_attention=False,
+        use_memory_efficient_attention=True,
     )
     text_encoder, text_encoder_params = FlaxCLIPTextModel.from_pretrained(
         model_dir, subfolder="text_encoder", dtype=jnp.bfloat16, _do_init=False
