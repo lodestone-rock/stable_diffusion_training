@@ -16,3 +16,4 @@ jax_cache/
 !model_properties_example.json
 *.png
 *.msgpack
+/Segmind-Vega-Flax
