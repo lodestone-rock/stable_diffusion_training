@@ -5,6 +5,7 @@
     "learning_rate": 1e-06,
     "unet_learning_rate": 1e-06,
     "text_encoder_learning_rate": 2.5e-07,
+    "text_encoder_2_learning_rate": 2.5e-07,
     "lr_scheduler": "constant",
     "adam_to_lion_scale_factor": 7.0,
     "compilation_cache_path": "jax_cache",

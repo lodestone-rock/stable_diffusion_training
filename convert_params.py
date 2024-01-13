@@ -88,13 +88,13 @@ def convert_pytorch_unet_to_flax(unet_folder_path: str, output_path:str, unet_la
 
         # conv layers are transposed from HWIO into OIHW
         if pytorch_unet_state_dict[pytorch_layer].dim() == 4:
-            flax_unet[flax_layer] = jnp.array(pytorch_unet_state_dict[pytorch_layer].permute(2,3,1,0).numpy())
+            flax_unet[flax_layer] = jnp.array(pytorch_unet_state_dict[pytorch_layer].permute(2,3,1,0).numpy(), dtype=jnp.float32)
         # GEMM layers are transposed from ND to DN
         elif pytorch_unet_state_dict[pytorch_layer].dim() == 2:
-            flax_unet[flax_layer] = jnp.array(pytorch_unet_state_dict[pytorch_layer].permute(1,0).numpy())
+            flax_unet[flax_layer] = jnp.array(pytorch_unet_state_dict[pytorch_layer].permute(1,0).numpy(), dtype=jnp.float32)
         # bias and norm stays the same because it's just 1D tensor
         else:
-            flax_unet[flax_layer] = jnp.array(pytorch_unet_state_dict[pytorch_layer].numpy())
+            flax_unet[flax_layer] = jnp.array(pytorch_unet_state_dict[pytorch_layer].numpy(), dtype=jnp.float32)
 
     flax_unet = dot_notation_to_dict(flax_unet)
     unet.save_pretrained(params=flax_unet, save_directory=output_path)
@@ -131,13 +131,13 @@ def convert_pytorch_clip_to_flax(clip_folder_path: str, output_path:str, clip_la
 
         # embedding layer is not transposed for some reason
         if "token_embedding" in pytorch_layer or "position_embedding" in pytorch_layer:
-            flax_clip[flax_layer] = jnp.array(pytorch_clip_state_dict[pytorch_layer].numpy())
+            flax_clip[flax_layer] = jnp.array(pytorch_clip_state_dict[pytorch_layer].numpy(), dtype=jnp.float32)
         # GEMM layers are transposed from ND to DN
         elif pytorch_clip_state_dict[pytorch_layer].dim() == 2:
-            flax_clip[flax_layer] = jnp.array(pytorch_clip_state_dict[pytorch_layer].permute(1,0).numpy())
+            flax_clip[flax_layer] = jnp.array(pytorch_clip_state_dict[pytorch_layer].permute(1,0).numpy(), dtype=jnp.float32)
         # bias and norm stays the same because it's just 1D tensor
         else:
-            flax_clip[flax_layer] = jnp.array(pytorch_clip_state_dict[pytorch_layer].numpy())
+            flax_clip[flax_layer] = jnp.array(pytorch_clip_state_dict[pytorch_layer].numpy(), dtype=jnp.float32)
 
     flax_clip = dot_notation_to_dict(flax_clip)
     clip.save_pretrained(params=flax_clip, save_directory=output_path)
@@ -174,13 +174,13 @@ def convert_pytorch_open_clip_to_flax(clip_folder_path: str, output_path:str, cl
 
         # embedding layer is not transposed for some reason
         if "token_embedding" in pytorch_layer or "position_embedding" in pytorch_layer:
-            flax_clip[flax_layer] = jnp.array(pytorch_clip_state_dict[pytorch_layer].numpy())
+            flax_clip[flax_layer] = jnp.array(pytorch_clip_state_dict[pytorch_layer].numpy(), dtype=jnp.float32)
         # GEMM layers are transposed from ND to DN
         elif pytorch_clip_state_dict[pytorch_layer].dim() == 2:
-            flax_clip[flax_layer] = jnp.array(pytorch_clip_state_dict[pytorch_layer].permute(1,0).numpy())
+            flax_clip[flax_layer] = jnp.array(pytorch_clip_state_dict[pytorch_layer].permute(1,0).numpy(), dtype=jnp.float32)
         # bias and norm stays the same because it's just 1D tensor
         else:
-            flax_clip[flax_layer] = jnp.array(pytorch_clip_state_dict[pytorch_layer].numpy())
+            flax_clip[flax_layer] = jnp.array(pytorch_clip_state_dict[pytorch_layer].numpy(), dtype=jnp.float32)
 
     flax_clip = dot_notation_to_dict(flax_clip)
     clip.save_pretrained(params=flax_clip, save_directory=output_path)

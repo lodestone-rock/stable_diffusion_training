@@ -6,9 +6,10 @@ import numpy as np
 from dataclasses import dataclass
 from diffusers import (
     FlaxAutoencoderKL,
-    FlaxUNet2DConditionModel,
+    # FlaxUNet2DConditionModel,
     FlaxDDIMScheduler,  # apparently broken if i use my implementation
 )
+from models import FlaxUNet2DConditionModel
 from diffusers.pipelines.stable_diffusion_xl import FlaxStableDiffusionXLPipeline
 from schedulers import FlaxDDPMScheduler
 from transformers import CLIPTokenizer, FlaxCLIPTextModel, FlaxCLIPTextModelWithProjection
@@ -213,7 +214,7 @@ def load_models(training_config: TrainingConfig) -> dict:
         model_dir,
         subfolder="unet",
         dtype=jnp.bfloat16,
-        use_memory_efficient_attention=True,
+        use_memory_efficient_attention=False,
     )
     text_encoder, text_encoder_params = FlaxCLIPTextModel.from_pretrained(
         model_dir, subfolder="text_encoder", dtype=jnp.bfloat16, _do_init=False
@@ -360,6 +361,10 @@ def create_lion_optimizer_states(
             models["text_encoder"]["text_encoder_params"],
             excluded_layer_pattern_from_weight_decay,
         )
+        text_encoder_2_weight_decay_mask = create_mask(
+            models["text_encoder_2"]["text_encoder_2_params"],
+            excluded_layer_pattern_from_weight_decay,
+        )
 
     with jax.default_device(jax.devices("cpu")[0]):
         if train_unet:
@@ -445,7 +450,7 @@ def create_lion_optimizer_states(
                     b1=0.9,
                     b2=0.99,
                     weight_decay=1e-2 * adam_to_lion_scale_factor,
-                    mask=text_encoder_weight_decay_mask,
+                    mask=text_encoder_2_weight_decay_mask,
                 )
             text_encoder_optimizer = optax.chain(
                 optax.clip_by_global_norm(1),  # prevent explosion
@@ -478,6 +483,9 @@ def on_device_model_training_state(training_config: TrainingConfig):
         train_text_encoder=True,
         train_unet=True,
         adam_to_lion_scale_factor=7,
+        u_net_learning_rate=training_config.unet_learning_rate,
+        text_encoder_learning_rate=training_config.text_encoder_learning_rate,
+        text_encoder_2_learning_rate=training_config.text_encoder_2_learning_rate,
         excluded_layer_pattern_from_weight_decay=training_config.excluded_layer_pattern_from_weight_decay,
         excluded_layer_from_quantization=training_config.excluded_layer_from_quantization,
         lion_8bit_block_size=training_config.quant_block_size,
@@ -768,17 +776,17 @@ def train_step(
         # sdxl uses second last layer
         penultimate_text_embeddings = encoder_hidden_states["hidden_states"][-2]
         # concatenate the sequence dim so it has more than 77 token
-        penultimate_text_embeddings = concatenate_text_encoder_latent(penultimate_text_embeddings)
+        penultimate_text_embeddings = concatenate_text_encoder_latent(penultimate_text_embeddings, batch_size, strip_bos_eos_token)
         # grab MAE pooled embedding from text embedding 2 (used for aditional guidance alongside crop res guidance)
         # since i use auto1111 guidane i just gonna average the pooled embeddings, ideally i modify the pooling before it got projected
         # TODO: modify the embedding pooling instead of doing this weird weighted average
-        pooled_text_embeddings_2 = encoder_2_hidden_states["text_embeds"].mean(axis=0)
-        pooled_text_embeddings_2 = jnp.expand_dims(pooled_text_embeddings_2, axis=0)
+        pooled_text_embeddings_2 = encoder_2_hidden_states["text_embeds"].reshape(batch_size,-1, 1280).mean(axis=1)
+        # pooled_text_embeddings_2 = jnp.expand_dims(pooled_text_embeddings_2, axis=0)
         print(pooled_text_embeddings_2.shape)
         # sdxl uses second last layer
         penultimate_text_embedding_2 = encoder_2_hidden_states["hidden_states"][-2]
         # concatenate the sequence dim so it has more than 77 token
-        penultimate_text_embedding_2 = concatenate_text_encoder_latent(penultimate_text_embedding_2)
+        penultimate_text_embedding_2 = concatenate_text_encoder_latent(penultimate_text_embedding_2, batch_size, strip_bos_eos_token)
 
         # i wont do any kind of data anotation here just gonna grab the original res as guidance for now
         res_cond_to_time_proj = get_res_cond_to_time_proj(
@@ -792,7 +800,7 @@ def train_step(
         additional_guidance_for_time_embed = {"text_embeds": pooled_text_embeddings_2, "time_ids": res_cond_to_time_proj}
 
         # combined embeddings is concatenated along hidden dimension axis so it has (sequence, 2048 hidden dim)
-        encoder_text_embeddings = jnp.concatenate([penultimate_text_embeddings, pooled_text_embeddings_2], axis=-1)
+        encoder_text_embeddings = jnp.concatenate([penultimate_text_embeddings, penultimate_text_embedding_2], axis=-1)
 
         # Predict the noise residual because predicting image is hard :P
         # essentially try to undo the noise process
@@ -855,7 +863,7 @@ def train_step(
     # update weight and bias value
     new_unet_state = unet_state.apply_gradients(grads=grad[0])
     new_text_encoder_state = text_encoder_state.apply_gradients(grads=grad[1])
-    new_text_encoder_2_state = text_encoder_2_state.apply_gradients(grads=grad[1])
+    new_text_encoder_2_state = text_encoder_2_state.apply_gradients(grads=grad[2])
 
     if ema_rate and unet_ema_params:
         print(ema_rate)
