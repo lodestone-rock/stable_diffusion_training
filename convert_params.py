@@ -1,11 +1,16 @@
 import json
 from models import FlaxUNet2DConditionModel
-from transformers import FlaxCLIPTextModel, FlaxCLIPTextModelWithProjection, CLIPTextConfig
+from diffusers import UNet2DConditionModel
+from transformers import FlaxCLIPTextModel, FlaxCLIPTextModelWithProjection, CLIPTextConfig, CLIPTextModel, CLIPTextModelWithProjection
 # import jax
 import jax.numpy as jnp
 from safetensors import safe_open
-# import optree
+from safetensors.torch import save_file
+import optree
 import pandas as pd
+import torch
+import numpy as np
+
 
 def dict_to_csv_pandas(dictionary, csv_file):
     df = pd.DataFrame(list(dictionary.items()), columns=['Key', 'Value'])
@@ -185,4 +190,93 @@ def convert_pytorch_open_clip_to_flax(clip_folder_path: str, output_path:str, cl
     flax_clip = dot_notation_to_dict(flax_clip)
     clip.save_pretrained(params=flax_clip, save_directory=output_path)
 
+def convert_flax_unet_to_pytorch(model_dir: str, output_path:str, unet_layer_mapping_path:str) -> None:
+
+    unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
+        model_dir, subfolder="unet", use_memory_efficient=False
+    )
+
+    unet_params = dict_to_dot_notation(unet_params)
+    layer_mapping = read_json_as_dict(unet_layer_mapping_path)
+
+    pytorch_unet = {}
+
+    for pytorch_layer, flax_layer in layer_mapping.items():
+
+        # conv layers are transposed from HWIO into OIHW
+        if unet_params[flax_layer].ndim == 4:
+            pytorch_unet[pytorch_layer] = torch.from_numpy(np.array(unet_params[flax_layer].transpose(3,2,0,1))).to(dtype=torch.float16)
+        # GEMM layers are transposed from ND to DN
+        elif unet_params[flax_layer].ndim == 2:
+            pytorch_unet[pytorch_layer] = torch.from_numpy(np.array(unet_params[flax_layer].transpose(1,0))).to(dtype=torch.float16)
+        # bias and norm stays the same because it's just 1D tensor
+        else:
+            pytorch_unet[pytorch_layer] = torch.from_numpy(np.array(unet_params[flax_layer])).to(dtype=torch.float16)
+    
+
+    unet_pytorch = UNet2DConditionModel.from_config(read_json_as_dict(f"{model_dir}/unet/config.json"))
+    unet_pytorch.load_state_dict(pytorch_unet)
+    unet_pytorch.save_pretrained(output_path)
+
+def convert_flax_open_clip_to_pytorch(model_dir: str, output_path:str, clip_layer_mapping_path:str) -> None:
+
+    text_encoder, text_encoder_params = FlaxCLIPTextModelWithProjection.from_pretrained(
+        model_dir, subfolder="text_encoder_2", _do_init=False
+    )
+
+    text_encoder_params = dict_to_dot_notation(text_encoder_params)
+    layer_mapping = read_json_as_dict(clip_layer_mapping_path)
+
+    layer_mapping = read_json_as_dict(clip_layer_mapping_path)
+
+    pytorch_clip = {}
+
+    for pytorch_layer, flax_layer in layer_mapping.items():
+
+        # embedding layer is not transposed for some reason
+        if "token_embedding" in flax_layer or "position_embedding" in flax_layer:
+            pytorch_clip[pytorch_layer] = torch.from_numpy(np.array(text_encoder_params[flax_layer])).to(dtype=torch.float16)
+        # GEMM layers are transposed from ND to DN
+        elif text_encoder_params[flax_layer].ndim == 2:
+            pytorch_clip[pytorch_layer] = torch.from_numpy(np.array(text_encoder_params[flax_layer].transpose(1,0))).to(dtype=torch.float16)
+        # bias and norm stays the same because it's just 1D tensor
+        else:
+            pytorch_clip[pytorch_layer] = torch.from_numpy(np.array(text_encoder_params[flax_layer])).to(dtype=torch.float16)
+
+
+    clip_config = CLIPTextConfig.from_json_file(f"{model_dir}/text_encoder_2/config.json")
+    clip_pytorch = CLIPTextModelWithProjection(config=clip_config)
+    clip_pytorch.load_state_dict(pytorch_clip)
+    clip_pytorch.save_pretrained(output_path)
+
+def convert_flax_clip_to_pytorch(model_dir: str, output_path:str, clip_layer_mapping_path:str) -> None:
+
+    text_encoder, text_encoder_params = FlaxCLIPTextModel.from_pretrained(
+        model_dir, subfolder="text_encoder", _do_init=False
+    )
+
+    text_encoder_params = dict_to_dot_notation(text_encoder_params)
+    layer_mapping = read_json_as_dict(clip_layer_mapping_path)
+
+    layer_mapping = read_json_as_dict(clip_layer_mapping_path)
+
+    pytorch_clip = {}
+
+    for pytorch_layer, flax_layer in layer_mapping.items():
+
+        # embedding layer is not transposed for some reason
+        if "token_embedding" in flax_layer or "position_embedding" in flax_layer:
+            pytorch_clip[pytorch_layer] = torch.from_numpy(np.array(text_encoder_params[flax_layer])).to(dtype=torch.float16)
+        # GEMM layers are transposed from ND to DN
+        elif text_encoder_params[flax_layer].ndim == 2:
+            pytorch_clip[pytorch_layer] = torch.from_numpy(np.array(text_encoder_params[flax_layer].transpose(1,0))).to(dtype=torch.float16)
+        # bias and norm stays the same because it's just 1D tensor
+        else:
+            pytorch_clip[pytorch_layer] = torch.from_numpy(np.array(text_encoder_params[flax_layer])).to(dtype=torch.float16)
+
+
+    clip_config = CLIPTextConfig.from_json_file(f"{model_dir}/text_encoder/config.json")
+    clip_pytorch = CLIPTextModel(config=clip_config)
+    clip_pytorch.load_state_dict(pytorch_clip)
+    clip_pytorch.save_pretrained(output_path)
 
