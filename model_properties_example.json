@@ -19,6 +19,7 @@
     "offset_noise_magnitude": 0.0,
     "min_snr_gamma_magnitude": 0.0,
     "perturbation_noise_magnitude": 0.0,
+    "add_additional_guidance_for_time_embed": false,
     "excluded_layer_pattern_from_weight_decay": [
         "bias",
         "scale",

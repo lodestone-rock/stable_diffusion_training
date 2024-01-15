@@ -379,25 +379,22 @@ class FlaxUNet2DConditionModel(nn.Module, FlaxModelMixin, ConfigMixin):
         # additional embeddings
         aug_emb = None
         if self.addition_embed_type == "text_time":
-            if added_cond_kwargs is None:
-                raise ValueError(
-                    f"Need to provide argument `added_cond_kwargs` for {self.__class__} when using `addition_embed_type={self.addition_embed_type}`"
-                )
-            text_embeds = added_cond_kwargs.get("text_embeds")
-            if text_embeds is None:
-                raise ValueError(
-                    f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `text_embeds` to be passed in `added_cond_kwargs`"
-                )
-            time_ids = added_cond_kwargs.get("time_ids")
-            if time_ids is None:
-                raise ValueError(
-                    f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `time_ids` to be passed in `added_cond_kwargs`"
-                )
-            # compute time embeds
-            time_embeds = self.add_time_proj(jnp.ravel(time_ids))  # (1, 6) => (6,) => (6, 256)
-            time_embeds = jnp.reshape(time_embeds, (text_embeds.shape[0], -1))
-            add_embeds = jnp.concatenate([text_embeds, time_embeds], axis=-1)
-            aug_emb = self.add_embedding(add_embeds)
+            if added_cond_kwargs:
+                text_embeds = added_cond_kwargs.get("text_embeds")
+                if text_embeds is None:
+                    raise ValueError(
+                        f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `text_embeds` to be passed in `added_cond_kwargs`"
+                    )
+                time_ids = added_cond_kwargs.get("time_ids")
+                if time_ids is None:
+                    raise ValueError(
+                        f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `time_ids` to be passed in `added_cond_kwargs`"
+                    )
+                # compute time embeds
+                time_embeds = self.add_time_proj(jnp.ravel(time_ids))  # (1, 6) => (6,) => (6, 256)
+                time_embeds = jnp.reshape(time_embeds, (text_embeds.shape[0], -1))
+                add_embeds = jnp.concatenate([text_embeds, time_embeds], axis=-1)
+                aug_emb = self.add_embedding(add_embeds)
 
         t_emb = t_emb + aug_emb if aug_emb is not None else t_emb
 

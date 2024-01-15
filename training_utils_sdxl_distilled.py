@@ -114,6 +114,7 @@ class TrainingConfig:
     accumulate_text_encoder_ema: bool
     accumulate_text_encoder_2_ema: bool
     ema_rate: float
+    add_additional_guidance_for_time_embed: bool
 
 
 def create_mask(pytree: dict, excluded_layer_list: list):
@@ -587,6 +588,7 @@ def train_step(
     min_snr_gamma_magnitude: float = 0.0,
     perturbation_noise_magnitude: float = 0.0,
     ema_rate: float = 0.0,
+    add_additional_guidance_for_time_embed: bool = False,
 ):
     """
     this jittable trainstep function just lightly wraps
@@ -788,16 +790,17 @@ def train_step(
         # concatenate the sequence dim so it has more than 77 token
         penultimate_text_embedding_2 = concatenate_text_encoder_latent(penultimate_text_embedding_2, batch_size, strip_bos_eos_token)
 
-        # i wont do any kind of data anotation here just gonna grab the original res as guidance for now
-        res_cond_to_time_proj = get_res_cond_to_time_proj(
-                original_size=(batch["pixel_values"].shape[2], batch["pixel_values"].shape[3]), # (height, width),
-                crops_coords_top_left=(0, 0), 
-                target_size=(batch["pixel_values"].shape[2], batch["pixel_values"].shape[3]), # (height, width) <<< same dim cuz i dont want to agument it yet
-                bs=batch_size,
-                dtype=jnp.bfloat16 # should i use fp32 here hmmm, mebbe not it's not acumulating anything
-        )
-        # additional guidance from pooling and resolution to be projected as time embedding 
-        additional_guidance_for_time_embed = {"text_embeds": pooled_text_embeddings_2, "time_ids": res_cond_to_time_proj}
+        if add_additional_guidance_for_time_embed:
+            # i wont do any kind of data anotation here just gonna grab the original res as guidance for now
+            res_cond_to_time_proj = get_res_cond_to_time_proj(
+                    original_size=(batch["pixel_values"].shape[2], batch["pixel_values"].shape[3]), # (height, width),
+                    crops_coords_top_left=(0, 0), 
+                    target_size=(batch["pixel_values"].shape[2], batch["pixel_values"].shape[3]), # (height, width) <<< same dim cuz i dont want to agument it yet
+                    bs=batch_size,
+                    dtype=jnp.bfloat16 # should i use fp32 here hmmm, mebbe not it's not acumulating anything
+            )
+            # additional guidance from pooling and resolution to be projected as time embedding 
+            additional_guidance_for_time_embed = {"text_embeds": pooled_text_embeddings_2, "time_ids": res_cond_to_time_proj}
 
         # combined embeddings is concatenated along hidden dimension axis so it has (sequence, 2048 hidden dim)
         encoder_text_embeddings = jnp.concatenate([penultimate_text_embeddings, penultimate_text_embedding_2], axis=-1)
@@ -810,7 +813,7 @@ def train_step(
             timesteps=timesteps,
             encoder_hidden_states=encoder_text_embeddings,
             train=True,
-            added_cond_kwargs=additional_guidance_for_time_embed,
+            added_cond_kwargs=additional_guidance_for_time_embed if add_additional_guidance_for_time_embed else None,
         ).sample
 
         # Get the target for loss depending on the prediction type
@@ -1068,6 +1071,7 @@ def dp_compile_all_unique_resolution(
                 "min_snr_gamma_magnitude",
                 "perturbation_noise_magnitude",
                 "ema_rate",
+                "add_additional_guidance_for_time_embed",
             ),
             out_shardings=(
                 jax.tree_map(
@@ -1132,6 +1136,7 @@ def dp_compile_all_unique_resolution(
                 training_config.min_snr_gamma_magnitude,
                 training_config.perturbation_noise_magnitude,
                 training_config.ema_rate,
+                training_config.add_additional_guidance_for_time_embed,
             )
             # store in dict
             # lowered_hlos[f"{bucket_resolution[0]},{bucket_resolution[1]}"] = lowered_hlo
