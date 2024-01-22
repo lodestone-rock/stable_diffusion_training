@@ -70,6 +70,8 @@
             "caption_col": "caption",
             "filename_col": "filename",
             "coma_separated_shuffle": true,
+            "filename_uuid": false,
+            "file_extension": false,
             "max_tag_count": 20,
             "drop_caption_ratio": 0.9
         },
@@ -83,7 +85,11 @@
             "image_height_col_name": "image_height",
             "caption_col": "caption",
             "filename_col": "filename",
-            "coma_separated_shuffle": true
+            "filename_uuid": false,
+            "file_extension": false,
+            "coma_separated_shuffle": true,
+            "max_tag_count": 0,
+            "drop_caption_ratio": 0
         }
     },
     "token": "hf_token",
