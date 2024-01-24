@@ -481,10 +481,10 @@ def on_device_model_training_state(training_config: TrainingConfig):
         lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())),
         frozen_states["vae_state"],
     )
-    # frozen_schedulers = jax.tree_map(
-    #     lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())),
-    #     frozen_states["schedulers_state"],
-    # )
+    frozen_schedulers = jax.tree_map(
+        lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())),
+        frozen_states["schedulers_state"],
+    )
     frozen_schedulers = frozen_states["schedulers_state"]
     frozen_lpips = jax.tree_map(
         lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())),
@@ -958,11 +958,10 @@ def dp_compile_all_unique_resolution(
                     frozen_vae,
                 ),
                 # frozen_schedulers
-                None,
-                # jax.tree_map(
-                #     lambda leaf: NamedSharding(mesh, PartitionSpec()),
-                #     frozen_schedulers,
-                # ),
+                jax.tree_map(
+                    lambda leaf: NamedSharding(mesh, PartitionSpec()),
+                    frozen_schedulers,
+                ),
                 # lpips
                 jax.tree_map(
                     lambda leaf: NamedSharding(mesh, PartitionSpec()),

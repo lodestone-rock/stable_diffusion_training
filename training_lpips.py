@@ -4,7 +4,7 @@ import sys
 import jax
 import jax.numpy as jnp
 import numpy as np
-from training_utils import (
+from training_utils_lpips import (
     TrainingConfig,
     on_device_model_training_state,
     dp_compile_all_unique_resolution,
