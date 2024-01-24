@@ -485,7 +485,6 @@ def on_device_model_training_state(training_config: TrainingConfig):
         lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())),
         frozen_states["schedulers_state"],
     )
-    frozen_schedulers = frozen_states["schedulers_state"]
     frozen_lpips = jax.tree_map(
         lambda leaf: jax.device_put(leaf, device=NamedSharding(mesh, PartitionSpec())),
         frozen_states["lpips_state"],
