@@ -7,3 +7,4 @@ tb-nightly
 tbp-nightly
 tqdm
 transformers
+lpips-j
