@@ -751,18 +751,9 @@ def train_step(
                 f"Unknown prediction type {frozen_noise_scheduler_state.call.config.prediction_type}"
             )
 
-        # "subtract" the noise and return less noised sample  and the state back
-        denoised_latent_at_t, _ = frozen_noise_scheduler_state.call.step(
-            noise_scheduler_state, model_pred, timesteps.reshape(-1,1,1,1), noisy_latents
-        ).to_tuple()
-
-        # frozen_lpips_adapter decodes / project the latent back to pixel space
-        # projection image back to [0, 1] range 
-        # this one is denoised latent
-        latent_images_at_t = ((jnp.clip((denoised_latent_at_t.transpose(0,2,3,1) @ frozen_lpips_adapter), -1, 1)+1)/2)
-        # this one is ground truth latent 
-        gt_images = ((jnp.clip((latents.transpose(0,2,3,1) @ frozen_lpips_adapter), -1, 1)+1)/2)
-        lpips_loss = frozen_lpips_state.call.apply(frozen_lpips_params, latent_images_at_t, gt_images)
+        model_pred_pixel_space = ((jnp.clip((model_pred.transpose(0,2,3,1) @ frozen_lpips_adapter), -1, 1)+1)/2)
+        target_pixel_space = ((jnp.clip((target.transpose(0,2,3,1) @ frozen_lpips_adapter), -1, 1)+1)/2)
+        lpips_loss = frozen_lpips_state.call.apply(frozen_lpips_params, target_pixel_space, model_pred_pixel_space)
 
         # MSE loss + lpips loss
         loss = (target - model_pred) ** 2 + lpips_loss
