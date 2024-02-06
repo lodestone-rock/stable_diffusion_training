@@ -202,32 +202,32 @@ def load_models(training_config: TrainingConfig) -> dict:
                 },
             }
     """
-
-    # load the model params and model object
-    model_dir = training_config.model_path
-    tokenizer = CLIPTokenizer.from_pretrained(model_dir, subfolder="tokenizer")
-    unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
-        model_dir,
-        subfolder="unet",
-        dtype=jnp.bfloat16,
-        use_memory_efficient_attention=True,
-    )
-    text_encoder, text_encoder_params = FlaxCLIPTextModel.from_pretrained(
-        model_dir, subfolder="text_encoder", dtype=jnp.bfloat16, _do_init=False
-    )
-    vae, vae_params = FlaxAutoencoderKL.from_pretrained(
-        model_dir,
-        dtype=jnp.bfloat16,
-        subfolder="vae",
-    )
-    noise_scheduler = FlaxDDPMScheduler(
-        beta_start=0.00085,
-        beta_end=0.012,
-        beta_schedule=training_config.beta_scheduler,
-        num_train_timesteps=1000,
-        prediction_type=training_config.prediction_type,
-    )
-    noise_scheduler_state = noise_scheduler.create_state()
+    with jax.default_device(jax.devices("cpu")[0]):
+        # load the model params and model object
+        model_dir = training_config.model_path
+        tokenizer = CLIPTokenizer.from_pretrained(model_dir, subfolder="tokenizer")
+        unet, unet_params = FlaxUNet2DConditionModel.from_pretrained(
+            model_dir,
+            subfolder="unet",
+            dtype=jnp.bfloat16,
+            use_memory_efficient_attention=True,
+        )
+        text_encoder, text_encoder_params = FlaxCLIPTextModel.from_pretrained(
+            model_dir, subfolder="text_encoder", dtype=jnp.bfloat16, _do_init=False
+        )
+        vae, vae_params = FlaxAutoencoderKL.from_pretrained(
+            model_dir,
+            dtype=jnp.bfloat16,
+            subfolder="vae",
+        )
+        noise_scheduler = FlaxDDPMScheduler(
+            beta_start=0.00085,
+            beta_end=0.012,
+            beta_schedule=training_config.beta_scheduler,
+            num_train_timesteps=1000,
+            prediction_type=training_config.prediction_type,
+        )
+        noise_scheduler_state = noise_scheduler.create_state()
 
     # should've put this in dataclasses
     return {
@@ -236,7 +236,7 @@ def load_models(training_config: TrainingConfig) -> dict:
             "unet_model": unet,
         },
         "vae": {
-            "vae_params": vae_params,
+            "vae_params": jax.tree_map(lambda x: x.astype(jnp.bfloat16), vae_params),
             "vae_model": vae,
         },
         "text_encoder": {
@@ -574,7 +574,7 @@ def train_step(
     ):
         # Convert images to latent space
         vae_outputs = frozen_vae_state.call.apply(
-            variables={"params": frozen_vae_state.params},
+            variables={"params": vae_params},
             sample=batch["pixel_values"],
             deterministic=True,
             method=frozen_vae_state.call.encode,
@@ -628,7 +628,7 @@ def train_step(
         # Add noise to the latents according to the noise magnitude at each timestep
         # (this is the forward diffusion process)
         noisy_latents = frozen_noise_scheduler_state.call.add_noise(
-            state=frozen_noise_scheduler_state.params,
+            state=noise_scheduler_state,
             original_samples=latents,
             noise=noise,
             timesteps=timesteps,
@@ -691,7 +691,7 @@ def train_step(
             target = noise
         elif frozen_noise_scheduler_state.call.config.prediction_type == "v_prediction":
             target = frozen_noise_scheduler_state.call.get_velocity(
-                state=frozen_noise_scheduler_state.params,
+                state=noise_scheduler_state,
                 sample=latents,
                 noise=noise,
                 timesteps=timesteps,
